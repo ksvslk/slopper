@@ -1,0 +1,129 @@
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.constraintlayout.widget.ConstraintLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:minHeight="?attr/listPreferredItemHeightLarge"
+    android:background="?attr/selectableItemBackground"
+    android:paddingStart="16dp"
+    android:paddingEnd="12dp"
+    android:paddingTop="8dp"
+    android:paddingBottom="8dp"
+    android:clickable="true"
+    android:focusable="true">
+
+    <com.google.android.material.radiobutton.MaterialRadioButton
+        android:id="@+id/model_radio_button"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:clickable="false"
+        android:focusable="false"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintBottom_toBottomOf="parent" />
+
+    <FrameLayout
+        android:id="@+id/status_icon_frame"
+        android:layout_width="40dp"
+        android:layout_height="40dp"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintBottom_toBottomOf="parent">
+
+        <com.google.android.material.progressindicator.CircularProgressIndicator
+            android:id="@+id/model_progress_bar"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center"
+            android:visibility="gone"
+            tools:visibility="visible"
+            tools:progress="60" />
+
+        <com.google.android.material.textview.MaterialTextView
+            android:id="@+id/model_progress_text"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center"
+            android:textAppearance="?attr/textAppearanceLabelSmall"
+            android:textColor="?attr/colorOnSurfaceVariant"
+            android:visibility="gone"
+            tools:visibility="visible"
+            tools:text="60%" />
+
+        <ImageButton
+            android:id="@+id/model_download_button"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:contentDescription="Download Model"
+            android:src="@drawable/outline_download_24"
+            android:visibility="gone"
+            app:tint="?attr/colorPrimary"
+            tools:visibility="gone" />
+
+        <ImageButton
+            android:id="@+id/model_delete_button"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:contentDescription="Delete Model"
+            android:src="@drawable/outline_delete_24"
+            android:visibility="gone"
+            app:tint="?attr/colorOnSurfaceVariant"
+            tools:visibility="gone" />
+
+        <ImageView
+            android:id="@+id/model_check_icon"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:scaleType="center"
+            android:src="@drawable/outline_check_circle_24"
+            android:visibility="gone"
+            app:tint="?attr/colorPrimary"
+            tools:visibility="visible" />
+
+    </FrameLayout>
+
+    <ImageButton
+        android:id="@+id/model_license_button"
+        android:layout_width="40dp"
+        android:layout_height="40dp"
+        android:layout_marginEnd="4dp"
+        android:background="?attr/selectableItemBackgroundBorderless"
+        android:contentDescription="View License"
+        android:src="@drawable/outline_text_snippet_24"
+        android:visibility="gone"
+        app:layout_constraintEnd_toStartOf="@id/status_icon_frame"
+        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:tint="?attr/colorOnSurfaceVariant"
+        tools:visibility="visible" />
+
+    <com.google.android.material.textview.MaterialTextView
+        android:id="@+id/model_name"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="12dp"
+        android:textAppearance="?attr/textAppearanceTitleMedium"
+        android:textColor="?attr/colorOnSurface"
+        app:layout_constraintBottom_toTopOf="@id/model_status_text"
+        app:layout_constraintEnd_toStartOf="@id/model_license_button"
+        app:layout_constraintStart_toEndOf="@id/model_radio_button"
+        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintVertical_chainStyle="packed"
+        tools:text="Llama 3.2 1B" />
+
+    <com.google.android.material.textview.MaterialTextView
+        android:id="@+id/model_status_text"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:textAppearance="?attr/textAppearanceBodyMedium"
+        android:textColor="?attr/colorOnSurfaceVariant"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintEnd_toEndOf="@id/model_name"
+        app:layout_constraintStart_toStartOf="@id/model_name"
+        app:layout_constraintTop_toBottomOf="@id/model_name"
+        tools:text="Downloaded" />
+
+</androidx.constraintlayout.widget.ConstraintLayout>

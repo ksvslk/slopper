@@ -1,5 +1,4 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- FrameLayout allows us to stack views on top of each other and toggle visibility -->
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     xmlns:tools="http://schemas.android.com/tools"
@@ -8,26 +7,26 @@
     android:background="@drawable/shape_bubble_background"
     android:elevation="4dp">
 
-    <!-- State 1: The default idle icon -->
-    <ImageView
+    <com.google.android.material.imageview.ShapeableImageView
         android:id="@+id/bubble_icon"
         android:layout_width="32dp"
         android:layout_height="32dp"
         android:layout_gravity="center"
-        android:src="@mipmap/ic_launcher_round"
+        android:src="@mipmap/ic_launcher_foreground"
         android:visibility="visible" />
 
-    <!-- State 2: The loading indicator -->
-    <ProgressBar
+    <com.google.android.material.progressindicator.CircularProgressIndicator
         android:id="@+id/bubble_progress"
-        android:layout_width="32dp"
-        android:layout_height="32dp"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
         android:layout_gravity="center"
-        android:indeterminateTint='#aa0055'
+        android:indeterminate="true"
+        android:indeterminateTint="@color/colorPrimary"
         android:visibility="gone"
+        app:indicatorSize="20dp"
+        app:trackColor="@android:color/transparent"
         tools:visibility="visible" />
 
-    <!-- State 3: The success indicator (icon + number) -->
     <LinearLayout
         android:id="@+id/bubble_success_layout"
         android:layout_width="wrap_content"
@@ -38,10 +37,10 @@
         android:visibility="gone"
         tools:visibility="gone">
 
-        <ImageView
+        <com.google.android.material.imageview.ShapeableImageView
             android:layout_width="20dp"
             android:layout_height="20dp"
-            android:src="@android:drawable/presence_online"/>
+            android:src="@drawable/ic_check"/>
 
     </LinearLayout>
 

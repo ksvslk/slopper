@@ -3,33 +3,46 @@ package com.indrek.slopper.service
 import android.content.Context
 import android.graphics.*
 import android.util.AttributeSet
+import android.util.TypedValue
 import android.view.MotionEvent
 import android.view.View
+import androidx.annotation.AttrRes
+import androidx.annotation.ColorInt
+import androidx.core.content.ContextCompat // --- IMPORTED THIS ---
+import com.indrek.slopper.R
+
 
 class SelectionView @JvmOverloads constructor(
     context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0
 ) : View(context, attrs, defStyleAttr) {
 
+    @ColorInt
+    private fun resolveThemeColor(@AttrRes attr: Int): Int {
+        val typedValue = TypedValue()
+        context.theme.resolveAttribute(attr, typedValue, true)
+        return typedValue.data
+    }
+
+    private val primaryColor = ContextCompat.getColor(context, R.color.colorPrimary)
+    private val onPrimaryColor = ContextCompat.getColor(context, R.color.colorOnPrimary)
+    private val translucentPrimaryColor = (primaryColor and 0x00FFFFFF) or 0x44000000.toInt()
+
+
     private val borderPaint = Paint().apply {
-        color = Color.CYAN
+        color = primaryColor
         style = Paint.Style.STROKE
-        strokeWidth = 6f
+        strokeWidth = 6f // Thickness of the main selection border
     }
 
     private val handlePaint = Paint().apply {
-        color = Color.WHITE
-        style = Paint.Style.FILL
-    }
-
-    private val handleLinePaint = Paint().apply {
-        color = Color.WHITE
-        style = Paint.Style.STROKE
-        strokeWidth = 8f
-        strokeCap = Paint.Cap.ROUND
+        color = primaryColor // Use primary color for the handle itself
+        style = Paint.Style.FILL // Fill the handle shape
+        strokeCap = Paint.Cap.ROUND // Rounded ends for the handle line
+        isAntiAlias = true // Smoother drawing
     }
 
     private val fillPaint = Paint().apply {
-        color = Color.parseColor("#4400FFFF") // Translucent Cyan
+        color = translucentPrimaryColor
         style = Paint.Style.FILL
     }
 
@@ -41,9 +54,12 @@ class SelectionView @JvmOverloads constructor(
 
     private var lastTouchY = 0f
 
-    private val edgeTouchZone = 60f // Touch zone for detecting edge touches
-    private val handleWidth = 80f // Width of the horizontal handle bars
-    private val handleThickness = 6f // Thickness of handle bars
+    private val edgeTouchZone = 60f // Touch zone remains the same
+    // --- INCREASED HANDLE WIDTH ---
+    private val handleWidth = 100f // *** Increased from 60f to 100f ***
+    // --- END INCREASED HANDLE WIDTH ---
+    private val handleHeight = 16f // Thickness remains at 16f
+
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
@@ -83,25 +99,21 @@ class SelectionView @JvmOverloads constructor(
     }
 
     private fun drawEdgeHandle(canvas: Canvas, centerX: Float, y: Float) {
-        // Draw a white horizontal bar with rounded ends
+        // Draw a simple, centered rounded rectangle as the handle
         val halfWidth = handleWidth / 2
+        val halfHeight = handleHeight / 2
+        val cornerRadius = handleHeight / 2 // Fully rounded ends
 
-        // Outer circle handles on the sides
-        canvas.drawCircle(centerX - halfWidth, y, 12f, handlePaint)
-        canvas.drawCircle(centerX + halfWidth, y, 12f, handlePaint)
-
-        // Horizontal bar connecting them
-        canvas.drawLine(
-            centerX - halfWidth, y,
-            centerX + halfWidth, y,
-            handleLinePaint
+        // Define the rectangle for the handle
+        val handleRect = RectF(
+            centerX - halfWidth,
+            y - halfHeight,
+            centerX + halfWidth,
+            y + halfHeight
         )
 
-        // Three small vertical lines for grip indicator
-        val lineHeight = 16f
-        canvas.drawLine(centerX - 20f, y - lineHeight/2, centerX - 20f, y + lineHeight/2, handleLinePaint)
-        canvas.drawLine(centerX, y - lineHeight/2, centerX, y + lineHeight/2, handleLinePaint)
-        canvas.drawLine(centerX + 20f, y - lineHeight/2, centerX + 20f, y + lineHeight/2, handleLinePaint)
+        // Draw the rounded rectangle
+        canvas.drawRoundRect(handleRect, cornerRadius, cornerRadius, handlePaint)
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
@@ -110,18 +122,10 @@ class SelectionView @JvmOverloads constructor(
                 val touchZone = getTouchZone(event.x, event.y)
 
                 when (touchZone) {
-                    TouchZone.TOP_EDGE -> {
-                        currentMode = TouchMode.RESIZING_TOP
-                    }
-                    TouchZone.BOTTOM_EDGE -> {
-                        currentMode = TouchMode.RESIZING_BOTTOM
-                    }
-                    TouchZone.INSIDE -> {
-                        currentMode = TouchMode.DRAGGING
-                    }
-                    TouchZone.OUTSIDE -> {
-                        return false
-                    }
+                    TouchZone.TOP_EDGE -> currentMode = TouchMode.RESIZING_TOP
+                    TouchZone.BOTTOM_EDGE -> currentMode = TouchMode.RESIZING_BOTTOM
+                    TouchZone.INSIDE ->  currentMode = TouchMode.DRAGGING
+                    TouchZone.OUTSIDE -> return false
                 }
 
                 lastTouchY = event.y
@@ -152,6 +156,9 @@ class SelectionView @JvmOverloads constructor(
                     TouchMode.IDLE -> {}
                 }
 
+                // Keep bounds within the screen
+                constrainRectToBounds()
+
                 invalidate() // Redraw the view
                 lastTouchY = event.y
             }
@@ -164,28 +171,54 @@ class SelectionView @JvmOverloads constructor(
         return true
     }
 
+    private fun constrainRectToBounds() {
+        val viewHeight = height.toFloat()
+        val rectHeight = selectionRect.height()
+
+        // Prevent top edge from going off-screen
+        if (selectionRect.top < 0f) {
+            selectionRect.offset(0f, -selectionRect.top)
+        }
+        // Prevent bottom edge from going off-screen
+        if (selectionRect.bottom > viewHeight) {
+            selectionRect.offset(0f, viewHeight - selectionRect.bottom)
+        }
+        // Ensure minimum height hasn't caused top to go off-screen
+        if (selectionRect.top < 0f) {
+            selectionRect.top = 0f
+            // Adjust bottom if needed after setting top to 0
+            if(selectionRect.height() < 100f) {
+                selectionRect.bottom = 100f
+            }
+        }
+
+    }
+
     private enum class TouchZone {
         TOP_EDGE, BOTTOM_EDGE, INSIDE, OUTSIDE
     }
 
     private fun getTouchZone(x: Float, y: Float): TouchZone {
-        // Check if touch is near the top edge (anywhere along the width)
-        if (y >= selectionRect.top - edgeTouchZone &&
-            y <= selectionRect.top + edgeTouchZone &&
-            x >= selectionRect.left &&
+        // Use a slightly larger touch zone around the drawn handle position
+        val handleTouchMargin = edgeTouchZone // Use existing zone for simplicity
+
+        // Check if touch is near the top edge handle center
+        if (y >= selectionRect.top - handleTouchMargin &&
+            y <= selectionRect.top + handleTouchMargin &&
+            x >= selectionRect.left && // Allow touching anywhere horizontally along the edge
             x <= selectionRect.right) {
             return TouchZone.TOP_EDGE
         }
 
-        // Check if touch is near the bottom edge (anywhere along the width)
-        if (y >= selectionRect.bottom - edgeTouchZone &&
-            y <= selectionRect.bottom + edgeTouchZone &&
+        // Check if touch is near the bottom edge handle center
+        if (y >= selectionRect.bottom - handleTouchMargin &&
+            y <= selectionRect.bottom + handleTouchMargin &&
             x >= selectionRect.left &&
             x <= selectionRect.right) {
             return TouchZone.BOTTOM_EDGE
         }
 
-        // Check if touch is inside the rectangle
+        // Check if touch is inside the rectangle (excluding edges already checked)
         if (selectionRect.contains(x, y)) {
             return TouchZone.INSIDE
         }

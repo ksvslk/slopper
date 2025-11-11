@@ -8,7 +8,7 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
 
     <application
-        android:name=".MyApplication"
+        android:name=".SlopperApplication"
         android:allowBackup="true"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:fullBackupContent="@xml/backup_rules"
@@ -18,7 +18,8 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.Slopper">
         <activity
-            android:name=".AutofillSettingsActivity"
+            android:name=".SlopperActivity"
+            android:launchMode="standard"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -26,25 +27,19 @@
             </intent-filter>
         </activity>
 
-        <service
-            android:name=".service.ContextAutofillService"
-            android:label="Slopper Autofill"
-            android:permission="android.permission.BIND_AUTOFILL_SERVICE"
-            android:exported="true">
-            <intent-filter>
-                <action android:name="android.service.autofill.AutofillService" />
-            </intent-filter>
-        </service>
-
-        <service
-            android:name=".service.ScreenCaptureService"
-            android:enabled="true"
-            android:exported="false"
-            android:foregroundServiceType="mediaProjection" />
+        <activity
+            android:name=".PromptEditorActivity"
+            android:theme="@style/Theme.Slopper"
+            android:windowSoftInputMode="stateVisible" /> <service
+        android:name=".service.ScreenCaptureService"
+        android:enabled="true"
+        android:exported="false"
+        android:foregroundServiceType="mediaProjection" />
 
         <service
             android:name=".service.FloatingToolService"
-            android:exported="false" />
+            android:exported="false"
+            android:configChanges="uiMode"> </service>
     </application>
 
 </manifest>

@@ -1,5 +1,30 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="black">#FF000000</color>
-    <color name="white">#FFFFFFFF</color>
+    <color name="colorPrimary">#0D47A1</color>
+    <color name="colorOnPrimary">#FFFFFF</color>
+    <color name="colorPrimaryContainer">#D3E3FF</color>
+    <color name="colorOnPrimaryContainer">#001D36</color>
+    <color name="colorSecondary">#C66900</color>
+    <color name="colorOnSecondary">#FFFFFF</color>
+    <color name="colorSecondaryContainer">#FFDDB2</color>
+    <color name="colorOnSecondaryContainer">#2D1600</color>
+    <color name="colorTertiary">#00695C</color>
+    <color name="colorOnTertiary">#FFFFFF</color>
+    <color name="colorTertiaryContainer">#B2DFDB</color>
+    <color name="colorOnTertiaryContainer">#00201D</color>
+    <color name="colorError">#B00020</color>
+    <color name="colorOnError">#FFFFFF</color>
+    <color name="colorBackground">#FDFBFF</color>
+    <color name="colorOnBackground">#1A1C1E</color>
+    <color name="colorSurface">#FDFBFF</color>
+    <color name="colorOnSurface">#1A1C1E</color>
+    <color name="colorSurfaceVariant">#E0E2EC</color>
+    <color name="colorOnSurfaceVariant">#44474E</color>
+    <color name="colorOutline">#74777F</color>
+    <color name="colorCardBackground">#D3E3FF</color>
+
+    <color name="colorPrimaryDark">#002171</color>
+    <color name="colorAccent">#C66900</color>
+    <color name="windowBackground">#FDFBFF</color>
+    <color name="textColorPrimary">@color/colorOnBackground</color> <color name="textColorSecondary">@color/colorOnSurfaceVariant</color>
 </resources>

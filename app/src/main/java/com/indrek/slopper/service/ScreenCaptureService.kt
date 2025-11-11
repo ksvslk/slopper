@@ -1,10 +1,12 @@
 package com.indrek.slopper.service
 
+import android.Manifest
 import android.app.*
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.PackageManager
 import android.content.res.Resources
 import android.graphics.Bitmap
 import android.graphics.PixelFormat
@@ -19,9 +21,12 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.provider.Settings
 import android.util.Log
 import android.widget.Toast
+import androidx.annotation.RequiresApi
 import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.LiveData
 import androidx.lifecycle.MutableLiveData
 import com.google.mediapipe.tasks.genai.llminference.LlmInference
@@ -29,44 +34,94 @@ import com.google.mediapipe.tasks.genai.llminference.LlmInferenceSession
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
-import com.indrek.slopper.AutofillSettingsActivity
+import com.indrek.slopper.SlopperActivity
 import com.indrek.slopper.Model
-import com.indrek.slopper.ModelLocation
-import com.indrek.slopper.MyApplication
-import com.indrek.slopper.R
-import java.io.File
-import java.io.FileOutputStream
+
 import java.util.concurrent.Executors
+import androidx.core.graphics.createBitmap
+import androidx.core.content.edit
+// --- REMOVED ASSET PACK IMPORTS ---
+import com.indrek.slopper.R
+// --- MODIFIED: Imports for Limit Check ---
+import com.indrek.slopper.SlopperActivity.Companion.FREE_TIER_LIMIT
+import com.indrek.slopper.SlopperActivity.Companion.KEY_DAILY_LIMIT_COUNT
+import com.indrek.slopper.SlopperActivity.Companion.KEY_DAILY_LIMIT_DAY
+import com.indrek.slopper.SlopperActivity.Companion.PREFS_NAME
+import com.indrek.slopper.SlopperActivity.Companion.PREMIUM_ENTITLEMENT_ID
+import com.indrek.slopper.SlopperApplication // <-- ADD THIS IMPORT
+import com.revenuecat.purchases.CacheFetchPolicy
+import com.revenuecat.purchases.Purchases
+import com.revenuecat.purchases.getCustomerInfoWith
+import java.util.Calendar
+// --- END MODIFIED ---
+import com.indrek.slopper.generatePrompt
+import com.indrek.slopper.getTemperatureKey
+import com.indrek.slopper.getTopKKey
+// --- ADDED SINGLETON IMPORT ---
+import com.indrek.slopper.ModelDownloadManager
+import java.io.File
+import java.lang.IllegalStateException
 
 class ScreenCaptureService : Service() {
+    // ... (All properties like mediaProjection, virtualDisplay, etc. are unchanged) ...
     private var mediaProjection: MediaProjection? = null
     private var virtualDisplay: VirtualDisplay? = null
     private var imageReader: ImageReader? = null
     private val handler = Handler(Looper.getMainLooper())
     private lateinit var commandReceiver: BroadcastReceiver
     private var captureAttempts = 0
-    private var captureRect: Rect? = null
-    private var captureTone: String? = null // Variable to hold the chosen tone
 
-    // For reply generation
+    private var lastRecognizedText: String? = null
+
     private val executor = Executors.newSingleThreadExecutor()
+
+    // --- MODIFICATION: START ---
+    private var configChangeReceiver: BroadcastReceiver? = null
+    // --- MODIFICATION: END ---
+
+    // --- ADDED: Helper to get the application class ---
+    private val slopperApp: SlopperApplication
+        get() = applicationContext as SlopperApplication
+    // --- END ADDED ---
+
+    private val permissionCheckRunnable = object : Runnable {
+        override fun run() {
+            if (!Settings.canDrawOverlays(this@ScreenCaptureService)) {
+                Log.w(TAG, "Overlay permission revoked while service running. Stopping service.")
+                Toast.makeText(this@ScreenCaptureService, "Overlay permission revoked. Stopping capture session.", Toast.LENGTH_LONG).show()
+                getSharedPreferences(SlopperActivity.PREFS_NAME, MODE_PRIVATE).edit().apply {
+                    putBoolean(SlopperActivity.KEY_SERVICES_ENABLED, false)
+                    apply()
+                }
+                _isServiceRunning.postValue(false)
+                stopSelf()
+            } else {
+                handler.postDelayed(this, 2000)
+            }
+        }
+    }
 
     private val projectionCallback = object : MediaProjection.Callback() {
         override fun onStop() {
             super.onStop()
-            Log.w(TAG, "MediaProjection was stopped. Stopping service.")
+            Log.w(TAG, "MediaProjection was stopped externally. Stopping service.")
+            _isServiceRunning.postValue(false)
             stopSelf()
         }
     }
 
+    // ... (Companion object is unchanged) ...
     companion object {
         const val TAG = "ScreenCaptureService"
         const val NOTIFICATION_ID = 123
         const val CHANNEL_ID = "ScreenCapture"
         const val ACTION_CAPTURE_AND_RECOGNIZE = "com.indrek.slopper.ACTION_CAPTURE_AND_RECOGNIZE"
-        const val EXTRA_REPLY_TONE = "extra_reply_tone" // Key for passing the tone
+        const val ACTION_STOP_SERVICE = "com.indrek.slopper.ACTION_STOP_SERVICE"
         const val EXTRA_RESULT_CODE = "resultCode"
         const val EXTRA_DATA = "data"
+        const val EXTRA_SINGLE_REPLY = "extra_single_reply"
+        const val EXTRA_IS_REGENERATION = "is_regeneration"
+        const val EXTRA_ERROR_MESSAGE = "extra_error_message" // --- ADDED ---
 
         private val _isServiceRunning = MutableLiveData<Boolean>(false)
         val isServiceRunning: LiveData<Boolean> = _isServiceRunning
@@ -79,382 +134,585 @@ class ScreenCaptureService : Service() {
         }
     }
 
+    // ... (onCreate is unchanged) ...
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
     override fun onCreate() {
         super.onCreate()
+        Log.d(TAG, "onCreate")
         _isServiceRunning.postValue(true)
         createNotificationChannel()
 
         commandReceiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context?, intent: Intent?) {
                 if (intent?.action == ACTION_CAPTURE_AND_RECOGNIZE) {
-                    captureRect = intent.getParcelableExtra(FloatingToolService.EXTRA_CAPTURE_RECT)
-                    captureTone = intent.getStringExtra(EXTRA_REPLY_TONE)?.lowercase()
-                    Log.d(TAG, "Received capture command for TONE: $captureTone")
-                    captureAttempts = 0
-                    handler.postDelayed({ attemptCapture() }, 300)
+
+                    // --- MODIFIED: This is the "Security Check" ---
+                    // All requests, new or regeneration, must pass this check.
+                    checkLimitAndProceed_Secure(
+                        onSuccess = {
+                            // Limit OK! Proceed with the original logic
+                            val isRegeneration = intent.getBooleanExtra(EXTRA_IS_REGENERATION, false)
+                            if (isRegeneration) {
+                                Log.d(TAG, "Received regeneration command")
+                                regenerateReply()
+                            } else {
+                                Log.d(TAG, "Received initial capture command")
+                                val captureRect: Rect? = intent.getParcelableExtra(FloatingToolService.EXTRA_CAPTURE_RECT)
+                                captureAttempts = 0
+                                handler.postDelayed({ attemptCapture(captureRect) }, 300)
+                            }
+                        },
+                        onFailure = { errorMsg ->
+                            // Limit reached or error. Show error and stop.
+                            handler.post {
+                                Toast.makeText(this@ScreenCaptureService, errorMsg, Toast.LENGTH_LONG).show()
+                            }
+                            // Broadcast a completion (with null) to stop any loading spinners
+                            broadcastCompletion(null, errorMsg)
+                        }
+                    )
+                    // --- END MODIFIED ---
                 }
             }
         }
-        registerReceiver(
-            commandReceiver,
-            IntentFilter(ACTION_CAPTURE_AND_RECOGNIZE),
-            RECEIVER_EXPORTED
+        val receiverFlags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) RECEIVER_EXPORTED else 0
+        try {
+            registerReceiver(commandReceiver, IntentFilter(ACTION_CAPTURE_AND_RECOGNIZE), null, handler, receiverFlags)
+            Log.d(TAG, "Command receiver registered.")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error registering receiver", e)
+            _isServiceRunning.postValue(false)
+            stopSelf()
+        }
+
+        // --- MODIFICATION: START ---
+        // Register receiver for configuration changes (like rotation)
+        configChangeReceiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context?, intent: Intent?) {
+                if (intent?.action == Intent.ACTION_CONFIGURATION_CHANGED) {
+                    Log.d(TAG, "Configuration changed. Re-setting up VirtualDisplay.")
+                    // Post to handler to ensure it runs on the service's main thread
+                    handler.post { setupVirtualDisplay() }
+                }
+            }
+        }
+        try {
+            val configFilter = IntentFilter(Intent.ACTION_CONFIGURATION_CHANGED)
+            registerReceiver(configChangeReceiver, configFilter, null, handler)
+            Log.d(TAG, "ConfigChange receiver registered.")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error registering ConfigChange receiver", e)
+            // Not fatal, but logging it
+        }
+        // --- MODIFICATION: END ---
+
+        handler.postDelayed(permissionCheckRunnable, 2000)
+    }
+
+    // --- This function is UNCHANGED ---
+    private fun checkLimitAndProceed_Secure(onSuccess: () -> Unit, onFailure: (String) -> Unit) {
+        // 1. Check RevenueCat (fetch from network to be sure)
+        Purchases.sharedInstance.getCustomerInfoWith(
+            fetchPolicy = CacheFetchPolicy.FETCH_CURRENT,
+            onSuccess = { customerInfo ->
+                val isPremium = customerInfo.entitlements[PREMIUM_ENTITLEMENT_ID]?.isActive == true
+
+                if (isPremium) {
+                    // User is premium, all good!
+                    Log.d(TAG, "Premium user confirmed. Proceeding.")
+                    onSuccess()
+                    return@getCustomerInfoWith
+                }
+
+                // --- User is FREE. Check and increment the counter ---
+                if (checkAndIncrementCounter()) {
+                    // Limit OK
+                    Log.d(TAG, "Free user limit OK. Proceeding.")
+                    onSuccess()
+                } else {
+                    // Limit Reached
+                    Log.w(TAG, "Free user limit REACHED. Denying.")
+                    onFailure("Daily free limit reached. Upgrade for more.")
+                }
+            },
+            onError = {
+                // Fail closed. If we can't check RC, assume they are free and deny.
+                Log.e(TAG, "Could not verify subscription status. Denying request. ${it.message}")
+                onFailure("Could not verify subscription. Please check connection.")
+            }
         )
     }
 
-    override fun onStartCommand(intent: Intent, flags: Int, startId: Int): Int {
+    /**
+     * Checks and increments the daily limit counter.
+     * --- THIS IS THE FIX ---
+     * @return `true` if generation is allowed, `false` if limit is reached.
+     */
+    private fun checkAndIncrementCounter(): Boolean {
+        val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+
+        // --- MODIFIED: Use the new TrustedTimeClient ---
+        val trustedTime: Long? = slopperApp.trustedTimeClient?.computeCurrentUnixEpochMillis()
+
+        if (trustedTime == null) {
+            // This case handles when the client failed to init or has no time signal.
+            // As per the docs, this can happen if there's no internet since boot.
+            // We "fail closed" and deny the request to be safe.
+            Log.e(TAG, "TrustedTimeClient is null or has no time signal. Denying request.")
+            // You could also fall back to System.currentTimeMillis() if you want to allow
+            // the vulnerable behavior, but failing closed is safer.
+            // val trustedTime = System.currentTimeMillis() // <-- Vulnerable fallback
+            return false // Deny request
+        }
+
+        val trustedCalendar = Calendar.getInstance().apply { timeInMillis = trustedTime }
+        val trustedDay = trustedCalendar.get(Calendar.DAY_OF_YEAR)
+        // --- END MODIFIED ---
+
+        val lastGenDay = prefs.getInt(KEY_DAILY_LIMIT_DAY, -1)
+        var generationCount = prefs.getInt(KEY_DAILY_LIMIT_COUNT, 0)
+
+        if (trustedDay != lastGenDay) {
+            // New day, reset counter
+            generationCount = 1
+            prefs.edit {
+                putInt(KEY_DAILY_LIMIT_COUNT, generationCount)
+                putInt(KEY_DAILY_LIMIT_DAY, trustedDay)
+                apply()
+            }
+            Log.d(TAG, "New trusted day detected. Count reset to 1.")
+            return true // Allowed
+        } else {
+            // Same day, check limit
+            if (generationCount < FREE_TIER_LIMIT) {
+                // Limit not reached, increment
+                generationCount++
+                prefs.edit {
+                    putInt(KEY_DAILY_LIMIT_COUNT, generationCount)
+                    apply()
+                }
+                Log.d(TAG, "Same trusted day. Count incremented to $generationCount.")
+                return true // Allowed
+            } else {
+                // Limit IS reached
+                Log.w(TAG, "Same trusted day. Count ($generationCount) at or over limit ($FREE_TIER_LIMIT).")
+                return false // Denied
+            }
+        }
+    }
+    // --- END FIX ---
+
+
+    // ... (onStartCommand, setupVirtualDisplay, attemptCapture, captureAndProcessImage are UNCHANGED) ...
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        Log.d(TAG, "onStartCommand received")
+
+        // --- MODIFICATION: START ---
+        if (intent?.action == ACTION_STOP_SERVICE) {
+            Log.d(TAG, "Received STOP command from notification.")
+
+            // Set preference to OFF
+            getSharedPreferences(SlopperActivity.PREFS_NAME, MODE_PRIVATE).edit {
+                putBoolean(SlopperActivity.KEY_SERVICES_ENABLED, false)
+            }
+
+            // Stop floating tool
+            stopService(Intent(this, FloatingToolService::class.java))
+
+            // Stop self
+            _isServiceRunning.postValue(false)
+            stopSelf()
+            return START_NOT_STICKY
+        }
+        // --- MODIFICATION: END ---
+
+        if (intent == null) {
+            Log.w(TAG, "onStartCommand called with null intent, likely restart. Stopping.")
+            _isServiceRunning.postValue(false)
+            stopSelf()
+            return START_NOT_STICKY
+        }
+
+        if (!Settings.canDrawOverlays(this)) {
+            Log.e(TAG, "ScreenCaptureService requires Overlay permission. Stopping self.")
+            Toast.makeText(this, "Overlay permission required for capture session.", Toast.LENGTH_LONG).show()
+            _isServiceRunning.postValue(false)
+            stopSelf()
+            return START_NOT_STICKY
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            Log.e(TAG, "ScreenCaptureService requires Notification permission on API 33+ to run in foreground. Stopping self.")
+            Toast.makeText(this, "Slopper requires Notification permission.", Toast.LENGTH_SHORT).show()
+            _isServiceRunning.postValue(false)
+            stopSelf()
+            return START_NOT_STICKY
+        }
+
         val notification = createNotification()
-        startForeground(NOTIFICATION_ID, notification)
+        try {
+            startForeground(NOTIFICATION_ID, notification)
+            Log.d(TAG, "Service started in foreground.")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error starting foreground service", e)
+            Toast.makeText(this, "Could not start capture service.", Toast.LENGTH_SHORT).show()
+            _isServiceRunning.postValue(false)
+            stopSelf()
+            return START_NOT_STICKY
+        }
+
         val resultCode = intent.getIntExtra(EXTRA_RESULT_CODE, Activity.RESULT_CANCELED)
         val data: Intent? = intent.getParcelableExtra(EXTRA_DATA)
-        if (data != null) {
-            val mediaProjectionManager =
-                getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-            mediaProjection = mediaProjectionManager.getMediaProjection(resultCode, data)
+
+        if (resultCode == Activity.RESULT_OK && data != null) {
+            val mediaProjectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+            if (mediaProjection != null) {
+                Log.w(TAG, "MediaProjection already exists, stopping old one.")
+                mediaProjection?.stop()
+            }
+            mediaProjection = try {
+                mediaProjectionManager.getMediaProjection(resultCode, data)
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to get MediaProjection", e)
+                null
+            }
+
+            if (mediaProjection == null) {
+                Log.e(TAG, "Failed to get MediaProjection instance.")
+                Toast.makeText(this, "Failed to initialize screen capture.", Toast.LENGTH_SHORT).show()
+                _isServiceRunning.postValue(false)
+                stopSelf()
+                return START_NOT_STICKY
+            }
             mediaProjection?.registerCallback(projectionCallback, handler)
+            Log.d(TAG, "MediaProjection obtained and callback registered.")
             setupVirtualDisplay()
         } else {
+            Log.e(TAG, "Screen capture intent data invalid (resultCode=$resultCode, data==null is ${data==null}).")
+            Toast.makeText(this, "Failed to initialize screen capture.", Toast.LENGTH_SHORT).show()
+            _isServiceRunning.postValue(false)
             stopSelf()
+            return START_NOT_STICKY
         }
         return START_NOT_STICKY
     }
 
     private fun setupVirtualDisplay() {
+        // --- MODIFICATION: START ---
+        if (mediaProjection == null) {
+            Log.w(TAG, "setupVirtualDisplay called but mediaProjection is null. Aborting.")
+            // This can happen if config change receiver fires before projection is ready
+            return
+        }
+        // --- MODIFICATION: END ---
+
         val displayMetrics = Resources.getSystem().displayMetrics
         val screenWidth = displayMetrics.widthPixels
         val screenHeight = displayMetrics.heightPixels
-        imageReader = ImageReader.newInstance(screenWidth, screenHeight, PixelFormat.RGBA_8888, 2)
-        virtualDisplay = mediaProjection?.createVirtualDisplay(
-            "ScreenCapture", screenWidth, screenHeight, displayMetrics.densityDpi,
-            DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR, imageReader?.surface, null, handler
-        )
+        Log.d(TAG, "setupVirtualDisplay: New dimensions $screenWidth x $screenHeight") // Added log
+        try {
+            imageReader?.close()
+            virtualDisplay?.release()
+
+            imageReader = ImageReader.newInstance(screenWidth, screenHeight, PixelFormat.RGBA_8888, 2)
+            virtualDisplay = mediaProjection?.createVirtualDisplay(
+                "ScreenCapture", screenWidth, screenHeight, displayMetrics.densityDpi,
+                DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR, imageReader?.surface, null, handler
+            )
+            if (virtualDisplay == null) {
+                Log.e(TAG, "Failed to create VirtualDisplay.")
+                Toast.makeText(this, "Failed to start screen capture display.", Toast.LENGTH_SHORT).show()
+                _isServiceRunning.postValue(false)
+                stopSelf()
+            } else {
+                Log.d(TAG, "VirtualDisplay created successfully.")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error setting up VirtualDisplay or ImageReader", e)
+            Toast.makeText(this, "Error starting screen capture display.", Toast.LENGTH_SHORT).show()
+            _isServiceRunning.postValue(false)
+            stopSelf()
+        }
     }
 
-    private fun attemptCapture() {
-        val image = imageReader?.acquireLatestImage()
-        if (image == null) {
-            captureAttempts++
-            if (captureAttempts < 5) handler.postDelayed(
-                { attemptCapture() },
-                200L * captureAttempts
-            )
+    private fun attemptCapture(captureRect: Rect?) {
+        Log.d(TAG, "Attempting capture...")
+        val currentImageReader = imageReader
+        if (currentImageReader == null || virtualDisplay == null || mediaProjection == null) {
+            Log.e(TAG, "Cannot capture, service state invalid (reader=$currentImageReader, display=$virtualDisplay, projection=$projectionCallback).")
+            broadcastCompletion(null)
             return
         }
+
+        val image: Image? = try {
+            currentImageReader.acquireLatestImage()
+        } catch (e: IllegalStateException) {
+            Log.e(TAG, "Failed to acquire image, reader might be closed.", e)
+            null
+        }
+
+        if (image == null) {
+            captureAttempts++
+            Log.w(TAG, "Failed to acquire image (attempt $captureAttempts). Retrying...")
+            if (captureAttempts < 5) handler.postDelayed(
+                { attemptCapture(captureRect) },
+                200L * captureAttempts
+            ) else {
+                Log.e(TAG, "Failed to acquire image after multiple attempts.")
+                Toast.makeText(this, "Capture failed. Try again.", Toast.LENGTH_SHORT).show()
+                broadcastCompletion(null)
+            }
+            return
+        }
+        Log.d(TAG, "Image acquired successfully.")
         try {
-            captureAndProcessImage(image)
+            captureAndProcessImage(image, captureRect)
         } finally {
-            image.close()
+            try { image.close() } catch (e: Exception) { Log.e(TAG, "Error closing image", e) }
         }
     }
 
-    private fun captureAndProcessImage(image: Image) {
-        val fullBitmap = imageToBitmap(image)
+    private fun captureAndProcessImage(image: Image, captureRect: Rect?) {
+        val fullBitmap: Bitmap? = try {
+            imageToBitmap(image)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to convert Image to Bitmap", e)
+            null
+        }
+
+        if (fullBitmap == null) {
+            broadcastCompletion(null)
+            return
+        }
+
         val bitmapToProcess: Bitmap
         try {
-            val rect = captureRect
-            if (rect != null && rect.width() > 0 && rect.height() > 0) {
+            if (captureRect != null && captureRect.width() > 0 && captureRect.height() > 0) {
                 val finalRect = Rect(
-                    maxOf(0, rect.left),
-                    maxOf(0, rect.top),
-                    minOf(fullBitmap.width, rect.right),
-                    minOf(fullBitmap.height, rect.bottom)
+                    maxOf(0, captureRect.left),
+                    maxOf(0, captureRect.top),
+                    minOf(fullBitmap.width, captureRect.right),
+                    minOf(fullBitmap.height, captureRect.bottom)
                 )
                 if (finalRect.width() <= 0 || finalRect.height() <= 0) {
-                    fullBitmap.recycle(); return
+                    Log.e(TAG, "Invalid capture rectangle dimensions after clamping: ${finalRect}")
+                    if (!fullBitmap.isRecycled) fullBitmap.recycle()
+                    broadcastCompletion(null)
+                    return
                 }
-                bitmapToProcess = Bitmap.createBitmap(
-                    fullBitmap,
-                    finalRect.left,
-                    finalRect.top,
-                    finalRect.width(),
-                    finalRect.height()
-                )
-                fullBitmap.recycle()
+                Log.d(TAG, "Cropping bitmap to rect: $finalRect")
+                bitmapToProcess = Bitmap.createBitmap(fullBitmap, finalRect.left, finalRect.top, finalRect.width(), finalRect.height())
+                if (!fullBitmap.isRecycled) fullBitmap.recycle()
             } else {
+                Log.d(TAG, "Processing full bitmap.")
                 bitmapToProcess = fullBitmap
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Error cropping bitmap", e); fullBitmap.recycle(); return
+            Log.e(TAG, "Error cropping bitmap", e);
+            if (!fullBitmap.isRecycled) fullBitmap.recycle();
+            broadcastCompletion(null)
+            return
         }
 
         val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
         recognizer.process(InputImage.fromBitmap(bitmapToProcess, 0))
             .addOnSuccessListener { visionText ->
-                val tone = captureTone
-                if (tone == null) {
-                    Log.e(TAG, "Cannot generate reply, tone was null.")
-                    broadcastCompletion(0)
-                    return@addOnSuccessListener
-                }
-
-                Log.d(
-                    TAG,
-                    "Text recognition successful. Starting SINGLE reply generation for tone: $tone"
-                )
+                lastRecognizedText = visionText.text
+                Log.d(TAG, "Text recognition successful. Caching text: '${lastRecognizedText?.take(50)}...'")
                 broadcastStart()
-                executor.execute {
-                    val singleReply = generateSingleReply(visionText.text, tone)
-                    val replies = if (singleReply != null) listOf(singleReply) else emptyList()
-                    MyApplication.cachedReplies = replies
-                    // Copy to clipboard if reply was generated
-                    if (singleReply != null) {
-                        copyToClipboard(singleReply.second)
-                    }
-                    broadcastCompletion(replies.size)
+                regenerateReply()
+            }
+            .addOnFailureListener { e ->
+                Log.e(TAG, "Text recognition failed", e)
+                broadcastCompletion(null)
+            }
+            .addOnCompleteListener {
+                Log.d(TAG, "Text recognition complete. Recycling bitmap.")
+                if (!bitmapToProcess.isRecycled) {
+                    bitmapToProcess.recycle()
                 }
             }
-            .addOnFailureListener { e -> Log.e(TAG, "Text recognition failed", e) }
-            .addOnCompleteListener { if (!bitmapToProcess.isRecycled) bitmapToProcess.recycle() }
+    }
+
+    // --- Regenerate Reply is UNCHANGED, as the check happens in the commandReceiver ---
+    private fun regenerateReply() {
+        val textToProcess = lastRecognizedText
+        if (textToProcess == null) {
+            Log.e(TAG, "Regeneration failed: cached text is null.")
+            handler.post { broadcastCompletion(null) }
+            return
+        }
+
+        val prefs = getSharedPreferences(SlopperActivity.PREFS_NAME, MODE_PRIVATE)
+        val styleName = prefs.getString(FloatingToolService.KEY_SELECTED_STYLE, "POST")!!
+        val replyType = prefs.getString(FloatingToolService.KEY_LAST_REPLY_TYPE, "Answer")!!
+
+        executor.execute {
+            val reply = generateSingleReply(textToProcess, styleName, replyType)
+            handler.post { broadcastCompletion(reply) }
+        }
     }
 
     private fun broadcastStart() {
+        Log.d(TAG, "Broadcasting GENERATION_STARTED")
         sendBroadcast(Intent(FloatingToolService.ACTION_GENERATION_STARTED))
     }
 
-    private fun broadcastCompletion(count: Int) {
+    // --- MODIFIED: Allow passing an error message ---
+    private fun broadcastCompletion(reply: String?, error: String? = null) {
+        Log.d(TAG, "Broadcasting GENERATION_COMPLETE. Reply: ${reply?.take(50)}...")
         val completeIntent = Intent(FloatingToolService.ACTION_GENERATION_COMPLETE).apply {
-            putExtra(FloatingToolService.EXTRA_REPLY_COUNT, count)
+            putExtra(EXTRA_SINGLE_REPLY, reply)
+            putExtra(EXTRA_ERROR_MESSAGE, error) // Pass the error
         }
         sendBroadcast(completeIntent)
     }
 
-    fun generateSingleReply(contextText: String, tone: String): Pair<String, String>? {
-        if (contextText.isBlank()) return null
-        val bestText =
-            contextText.split("\n").filter { it.trim().length > 10 }.maxByOrNull { it.length }
-                ?: contextText.take(200)
+    private fun generateSingleReply(contextText: String, styleName: String, replyTone: String, retryCount: Int = 0): String? {
+        if (contextText.isBlank() && replyTone != "Post") {
+            Log.w(TAG, "Context is blank and reply type is not 'Post', skipping generation.")
+            return null
+        }
 
         try {
-            val llm = createLlmInstance() ?: return null
+            // --- MODIFIED: Use new model path logic from singleton ---
+            val model = getCurrentModel()
 
-            val prompt = when (tone.lowercase()) {
-                "answer" -> """
-                        Answer this question in the range of 5–200 characters. Be direct and factual.
-                        
-                        Question: "$bestText"
-                        
-                        Rules:
-                        - Start directly with the answer (no "Sure," or "Well,").
-                        - No follow-up questions.
-                        - No engagement or filler phrases.
-                        - Just facts.
-                        - Use an emoji only if it naturally fits.
-                        
-                        Answer:
-                    """.trimIndent()
+            // This is a BLOCKING call, which is OK because we are on a background thread
+            val modelPath = ModelDownloadManager.getAbsoluteModelPath(model)
 
-                "question" -> """
-                         Ask one interesting, specific question about the topic below — as if you're a regular person
-                            commenting on social media who’s genuinely curious or skeptical.
-                        Context: "$bestText"
-                        
-                        Rules:
-                        - Ask something that shows genuine curiosity or seeks clarification.
-                        - Avoid generic questions like "What do you mean?" or "Can you explain?"
-                        - No greetings or fluff.
-                        - Keep it short (5–150 characters).
-                        - You may add a fitting emoji.
-                        
-                        Question:
-                    """.trimIndent()
+            // --- ADDED: Load LLM parameters from prefs ---
+            val prefs = getSharedPreferences(SlopperActivity.PREFS_NAME, MODE_PRIVATE)
+            val topK = prefs.getInt(getTopKKey(styleName), 65)
+            val finalTemperature = prefs.getFloat(getTemperatureKey(styleName), 1.0f)
 
-                "post" -> """
-                        Generate a random, engaging Twitter post (5–200 characters).
-                        
-                            Rules:
-                            - Write as if you're a real person sharing a thought, observation, or hot take.
-                            - Be witty, relatable, or thought-provoking.
-                            - No promotional language or calls to action.
-                            - No questions to followers.
-                            - Make it standalone — it should work without any context.
-                            - An emoji is fine if it fits naturally.
-                            
-                            Post:
-                        """.trimIndent()
-                else -> """
-                        Write a $tone reply (in the range of 5–200 characters) to: "$bestText"
-                        
-                        Rules:
-                        - Make ONE clear statement. No low-effort starters.
-                        - No questions.
-                        - No "let’s..." phrases.
-                        - No calls to action.
-                        - An emoji is fine if appropriate.
-                        
-                        Reply:
-                    """.trimIndent()
+            if (modelPath == null) {
+                Log.e(TAG, "Model path is null, cannot generate reply.")
+                handler.post {
+                    Toast.makeText(applicationContext, "Model '${model.displayName}' is not downloaded.", Toast.LENGTH_SHORT).show()
+                }
+                return null
             }
+            // --- END MODIFICATION ---
 
-            Log.d(TAG, "Generating SINGLE response for tone: $tone...")
+            val prompt = generatePrompt(
+                applicationContext,
+                styleName,
+                replyTone,
+                contextText.replace("\"", "'")
+            )
 
-            val randomTemp = listOf(0.6f, 0.7f, 0.75f, 0.8f, 0.85f, 0.9f).random()
-            val randomTopK = listOf(20, 30, 40, 50).random()
-
+            val llmOptions = LlmInference.LlmInferenceOptions.builder().setModelPath(modelPath).build()
+            llmOptions.maxTopK()
             val sessionOptions = LlmInferenceSession.LlmInferenceSessionOptions.builder()
-                .setTopK(randomTopK)
-                .setTemperature(randomTemp)
-                .setRandomSeed(System.currentTimeMillis().toInt())
+                .setTopK(topK)
+                .setTemperature(finalTemperature)
+                .setRandomSeed((System.nanoTime() % Int.MAX_VALUE).toInt())
                 .build()
 
-            Log.d(TAG, "Generating response for tone: $tone with temp=$randomTemp, topK=$randomTopK")
+            Log.d(TAG, "Generating response for style: $styleName, replyType: $replyTone with temp=$finalTemperature, topK=$topK, prompt:\n$prompt")
 
-            // Use session for generation
-            val session = LlmInferenceSession.createFromOptions(llm, sessionOptions)
-            session.addQueryChunk(prompt)
-            val rawResponse = session.generateResponse()
+            LlmInference.createFromOptions(applicationContext, llmOptions).use { llmInference ->
+                LlmInferenceSession.createFromOptions(llmInference, sessionOptions).use { session ->
+                    session.addQueryChunk(prompt)
+                    val rawResponse = session.generateResponse()
+                    val responseToProcess = if (styleName == "POST" || styleName == "CHAT") rawResponse.lowercase() else rawResponse
 
-            // Close session and LLM
-            session.close()
-            llm.close()
+                    if (responseToProcess.isNullOrBlank()) {
+                        Log.w(TAG, "LLM returned an empty or blank response for replyType: $replyTone")
+                        return null
+                    }
+                    Log.d(TAG, "Raw LLM Response: '$responseToProcess'")
 
-            val cleanedResponse = rawResponse
-                ?.trim()
-                ?.dropWhile { !it.isLetterOrDigit() }
-                ?.dropLastWhile { !it.isLetterOrDigit() }
-                ?.replace("\\n", " ")
-                ?.replace("\\r", "")
-                ?.replace("\\t", " ")
-                ?.replace("\n", " ")
-                ?.replace("\r", "")
-                ?.replace(Regex("\\s+"), " ")
-                ?.trim()
+                    val cleanedReply = responseToProcess
+                        .trim()
+                        .lines()
+                        .firstOrNull { it.isNotBlank() }
+                        ?.replace(Regex("^\\d+\\.?\\s*"), "")
+                        ?.replace(Regex("\\s*\\(.*?\\)$"), "")
+                        ?.replace(Regex("^\"?(.*?)\"?$"), "$1")
+                        ?.replace(Regex("^'(.*?)'$"), "$1")
+                        ?.replace(Regex("^`?(.*?)`?$"), "$1")
+                        ?.replace(Regex("^\\*?(.*?)\\*?$"), "$1")
+                        ?.replace("\\n", " ")
+                        ?.replace("\\r", "")
+                        ?.replace("\\t", " ")
+                        ?.replace("\n", " ")
+                        ?.replace("\r", "")
+                        ?.replace(Regex("\\s+"), " ")
+                        ?.trim()
 
-            return if (!cleanedResponse.isNullOrBlank()) {
-                Log.i(TAG, "Generated [$tone]: '$cleanedResponse'")
-                Pair(tone, cleanedResponse)
-            } else {
-                Log.w(TAG, "LLM returned an empty response for tone: $tone")
-                null
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to generate single reply", e)
-            return null
-        }
-    }
+                    if (cleanedReply.isNullOrBlank() && retryCount < 2) {
+                        Log.w(TAG, "Parsing resulted in empty string, retrying... (Attempt ${retryCount + 1}), Raw: $rawResponse")
+                        Thread.sleep(200L * (retryCount + 1))
+                        return generateSingleReply(contextText, styleName, replyTone, retryCount + 1)
+                    }
 
-    private fun copyToClipboard(text: String) {
-        handler.post {
-            val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-            val clip = android.content.ClipData.newPlainText("Generated Reply", text)
-            clipboard.setPrimaryClip(clip)
-            Log.d(TAG, "Copied to clipboard: $text")
-            Toast.makeText(this, "Reply copied to clipboard", Toast.LENGTH_SHORT).show()
-        }
-    }
-
-    /**
-     * Reads the user's selected model from SharedPreferences.
-     * @return The file name of the selected model.
-     */
-    private fun getCurrentModelFileName(): String {
-        val sharedPrefs = getSharedPreferences(AutofillSettingsActivity.PREFS_NAME, Context.MODE_PRIVATE)
-        val savedModelName = sharedPrefs.getString(
-            AutofillSettingsActivity.KEY_SELECTED_MODEL,
-            Model.GEMMA_2B.name // Default to Gemma 2B if nothing is saved
-        )
-        val selectedModel = try {
-            Model.valueOf(savedModelName ?: Model.GEMMA_2B.name)
-        } catch (e: IllegalArgumentException) {
-            Log.w(TAG, "Invalid model name '$savedModelName' in prefs, defaulting to GEMMA_2B.")
-            Model.GEMMA_2B
-        }
-        Log.d(TAG, "Using model: ${selectedModel.displayName}")
-        return selectedModel.fileName
-    }
-
-    private fun createLlmInstance(): LlmInference? {
-        try {
-            val modelFileName = getCurrentModelFileName() // Use the function to get the selected model
-            val modelPath = getModelPath(modelFileName) ?: return null
-            val options = LlmInference.LlmInferenceOptions.builder()
-                .setModelPath(modelPath)
-                .build()
-            return LlmInference.createFromOptions(applicationContext, options)
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to create LLM instance", e); return null
-        }
-    }
-
-    private fun getModelPath(modelFileName: String): String? {
-        // Get the model enum to check its location
-        val model = Model.values().find { it.fileName == modelFileName }
-
-        if (model == null) {
-            Log.e(TAG, "Unknown model file: $modelFileName")
-            return null
-        }
-
-        return when (model.location) {
-            ModelLocation.ASSETS -> getModelPathFromAssets(modelFileName)
-            ModelLocation.EXTERNAL -> getModelPathFromExternal(modelFileName)
-        }
-    }
-
-    private fun getModelPathFromAssets(modelFileName: String): String? {
-        // First check if already copied to internal storage
-        val internalModelFile = File(filesDir, modelFileName)
-        if (internalModelFile.exists()) {
-            Log.d(TAG, "Using model from internal storage: ${internalModelFile.absolutePath}")
-            return internalModelFile.absolutePath
-        }
-
-        // Try to copy from assets
-        try {
-            assets.open(modelFileName).use { input ->
-                FileOutputStream(internalModelFile).use { output ->
-                    input.copyTo(output)
+                    Log.i(TAG, "Generated and parsed reply for [$replyTone]: '$cleanedReply'")
+                    return cleanedReply
                 }
             }
-            Log.d(TAG, "Copied model from assets: ${internalModelFile.absolutePath}")
-            return internalModelFile.absolutePath
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to copy model from assets: $modelFileName", e)
+            Log.e(TAG, "Failed to generate reply", e)
             return null
         }
     }
 
-    private fun getModelPathFromExternal(modelFileName: String): String? {
-        // Check app's external files directory
-        // Path: /storage/emulated/0/Android/data/com.indrek.slopper/files/
-        val externalDir = getExternalFilesDir(null)
-        if (externalDir != null) {
-            val externalModelFile = File(externalDir, modelFileName)
-            if (externalModelFile.exists()) {
-                Log.d(TAG, "Using model from external storage: ${externalModelFile.absolutePath}")
-                return externalModelFile.absolutePath
-            } else {
-                Log.e(TAG, "Model file not found in external storage: ${externalModelFile.absolutePath}")
-                Toast.makeText(
-                    this,
-                    "Model '$modelFileName' not found. Please place it in: ${externalDir.absolutePath}",
-                    Toast.LENGTH_LONG
-                ).show()
-            }
-        }
 
-        // Also check internal storage as fallback
-        val internalModelFile = File(filesDir, modelFileName)
-        if (internalModelFile.exists()) {
-            Log.d(TAG, "Found model in internal storage instead: ${internalModelFile.absolutePath}")
-            return internalModelFile.absolutePath
+    // --- UNCHANGED: Still need this to know *which* model to ask for ---
+    private fun getCurrentModel(): Model {
+        val sharedPrefs = getSharedPreferences(SlopperActivity.PREFS_NAME, Context.MODE_PRIVATE)
+        val savedModelName = sharedPrefs.getString(
+            SlopperActivity.KEY_SELECTED_MODEL,
+            Model.GEMMA3_1B_IT.name
+        )
+        return try {
+            Model.valueOf(savedModelName ?: Model.GEMMA3_1B_IT.name)
+        } catch (e: IllegalArgumentException) {
+            Log.w(TAG, "Invalid model name '$savedModelName' found in prefs, using default.")
+            Model.GEMMA3_1B_IT
         }
-
-        Log.e(TAG, "Model file '$modelFileName' not found in any location")
-        return null
     }
 
+    // --- REMOVED: getModelPath() ---
+    // This logic is now in ModelDownloadManager.getAbsoluteModelPath()
+
+    // ... (imageToBitmap, createNotificationChannel, createNotification, onBind, onDestroy are all UNCHANGED) ...
     private fun imageToBitmap(image: Image): Bitmap {
         val planes = image.planes
-        val buffer = planes[0].buffer
-        val pixelStride = planes[0].pixelStride
-        val rowStride = planes[0].rowStride
+        if (planes.isEmpty()) {
+            throw IllegalStateException("Image has no planes")
+        }
+        val plane = planes[0]
+        val buffer = plane.buffer
+        val pixelStride = plane.pixelStride
+        val rowStride = plane.rowStride
+        if (pixelStride <= 0 || rowStride <= 0) {
+            throw IllegalStateException("Invalid image strides: pixelStride=$pixelStride, rowStride=$rowStride")
+        }
+
         val rowPadding = rowStride - pixelStride * image.width
-        val bitmap = Bitmap.createBitmap(
-            image.width + rowPadding / pixelStride,
-            image.height,
-            Bitmap.Config.ARGB_8888
-        )
+        val width = if (pixelStride > 0) image.width + rowPadding / pixelStride else image.width
+        if (width <= 0 || image.height <= 0) {
+            throw IllegalStateException("Invalid image dimensions derived from strides: width=$width, height=${image.height}")
+        }
+
+        val bitmap = createBitmap(width, image.height, Bitmap.Config.ARGB_8888)
+        buffer.rewind()
         bitmap.copyPixelsFromBuffer(buffer)
+
+        if (width > image.width) {
+            try {
+                val croppedBitmap = Bitmap.createBitmap(bitmap, 0, 0, image.width, image.height)
+                bitmap.recycle()
+                return croppedBitmap
+            } catch (e: Exception) {
+                Log.e(TAG, "Error cropping bitmap padding", e)
+                return bitmap
+            }
+        }
         return bitmap
     }
 
@@ -464,18 +722,49 @@ class ScreenCaptureService : Service() {
                 CHANNEL_ID,
                 "Screen Capture Channel",
                 NotificationManager.IMPORTANCE_LOW
-            )
-            getSystemService(NotificationManager::class.java).createNotificationChannel(
-                serviceChannel
-            )
+            ).apply {
+                description = "Notification channel for Slopper screen capture service"
+                enableLights(false)
+                enableVibration(false)
+                setShowBadge(false)
+            }
+            val manager = getSystemService(NotificationManager::class.java)
+            manager?.createNotificationChannel(serviceChannel) ?: Log.e(TAG, "NotificationManager not found.")
+            Log.d(TAG, "Notification channel created (or already exists).")
         }
     }
 
     private fun createNotification(): Notification {
+        val notificationIntent = Intent(this, SlopperActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
+        }
+        val pendingIntent = PendingIntent.getActivity(this, 0, notificationIntent, PendingIntent.FLAG_IMMUTABLE)
+
+        // --- MODIFICATION: START ---
+        val stopIntent = Intent(this, ScreenCaptureService::class.java).apply {
+            action = ACTION_STOP_SERVICE
+        }
+        val stopPendingIntent = PendingIntent.getService(
+            this,
+            1, // Use a different request code
+            stopIntent,
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+        val stopAction = NotificationCompat.Action.Builder(
+            R.drawable.outline_pause_circle_24, // Assumes this drawable exists
+            "Stop Session",
+            stopPendingIntent
+        ).build()
+        // --- MODIFICATION: END ---
+
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("Slopper Analysis Session")
-            .setContentText("Service is active. Tap the bubble to capture.")
+            .setContentTitle("Slopper Capture Active")
+            .setContentText("Tap the floating bubble to select text.")
             .setSmallIcon(R.mipmap.ic_launcher)
+            .setContentIntent(pendingIntent)
+            .setOngoing(true)
+            .setPriority(NotificationCompat.PRIORITY_MIN)
+            .addAction(stopAction) // <-- MODIFICATION: ADDED
             .build()
     }
 
@@ -483,12 +772,39 @@ class ScreenCaptureService : Service() {
 
     override fun onDestroy() {
         super.onDestroy()
+        Log.d(TAG, "onDestroy")
         _isServiceRunning.postValue(false)
-        if (::commandReceiver.isInitialized) unregisterReceiver(commandReceiver)
-        virtualDisplay?.release()
-        imageReader?.close()
-        mediaProjection?.unregisterCallback(projectionCallback)
-        mediaProjection?.stop()
-        Log.d(TAG, "ScreenCaptureService destroyed.")
+
+        handler.removeCallbacks(permissionCheckRunnable)
+
+        if (::commandReceiver.isInitialized) {
+            try {
+                unregisterReceiver(commandReceiver)
+                Log.d(TAG, "Command receiver unregistered.")
+            } catch (e: IllegalArgumentException) {
+                Log.w(TAG, "Receiver not registered or already unregistered?")
+            }
+        }
+
+        // --- MODIFICATION: START ---
+        if (configChangeReceiver != null) {
+            try {
+                unregisterReceiver(configChangeReceiver)
+                Log.d(TAG, "ConfigChange receiver unregistered.")
+            } catch (e: IllegalArgumentException) {
+                Log.w(TAG, "ConfigChange receiver not registered?")
+            }
+        }
+        // --- MODIFICATION: END ---
+
+        try { virtualDisplay?.release() } catch (e: Exception) { Log.e(TAG, "Error releasing VirtualDisplay", e) }
+        virtualDisplay = null
+        try { imageReader?.close() } catch (e: Exception) { Log.e(TAG, "Error closing ImageReader", e) }
+        imageReader = null
+        try { mediaProjection?.unregisterCallback(projectionCallback) } catch (e: Exception) { Log.e(TAG, "Error unregistering MediaProjection callback", e) }
+        try { mediaProjection?.stop() } catch (e: Exception) { Log.e(TAG, "Error stopping MediaProjection", e) }
+        mediaProjection = null
+
+        Log.d(TAG, "ScreenCaptureService resources released.")
     }
 }

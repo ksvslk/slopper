@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:paddingTop="16dp"
+    android:paddingHorizontal="20dp"
+    android:paddingBottom="16dp">
+
+    <com.google.android.material.textfield.TextInputLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:hint="Label">
+
+        <com.google.android.material.textfield.TextInputEditText
+            android:id="@+id/edit_action_label"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:inputType="textCapWords" />
+    </com.google.android.material.textfield.TextInputLayout>
+
+    <com.google.android.material.textfield.TextInputLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="16dp"
+        android:hint="Template">
+
+        <com.google.android.material.textfield.TextInputEditText
+            android:id="@+id/edit_action_template"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:minHeight="150dp"
+            android:gravity="top|start"
+            android:inputType="textMultiLine"
+            android:text="Task: Describe the action here.\nInput: {CONTEXT}" /> </com.google.android.material.textfield.TextInputLayout>
+
+</LinearLayout>

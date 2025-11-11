@@ -1,0 +1,7 @@
+<config:device-targeting-config
+    xmlns:config="http://schemas.android.com/apk/config">
+    <config:device-group name="compatible">
+        <config:device-selector
+            config:ram-min-bytes="4294967296" />
+    </config:device-group>
+</config:device-targeting-config>

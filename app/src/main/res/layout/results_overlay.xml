@@ -1,0 +1,143 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:paddingBottom="16dp">
+
+    <com.google.android.material.card.MaterialCardView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom"
+        android:layout_marginHorizontal="12dp"
+        app:cardCornerRadius="16dp"
+        app:cardElevation="0dp">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:padding="12dp">
+
+            <com.facebook.shimmer.ShimmerFrameLayout
+                android:id="@+id/shimmer_layout"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="12dp"
+                app:shimmer_auto_start="false"
+                app:shimmer_duration="1200">
+
+                <com.google.android.material.textview.MaterialTextView
+                    android:id="@+id/text_reply"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:gravity="center_vertical"
+                    android:minHeight="48dp"
+                    android:textColor="@color/textColorPrimary"
+                    android:textSize="16sp"
+                    tools:text="This is a sample generated reply that shows what the result will look like in the UI." />
+
+            </com.facebook.shimmer.ShimmerFrameLayout>
+            <View
+                android:layout_width="match_parent"
+                android:layout_height="1dp"
+                android:background="@color/colorOutline"/>
+
+            <LinearLayout
+                android:id="@+id/sliders_container_result"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:paddingTop="8dp">
+
+                <com.google.android.material.textview.MaterialTextView
+                    android:id="@+id/label_temperature_result"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="Creativity: 0.9"
+                    android:textColor="?attr/colorOnSurfaceVariant"
+                    android:textSize="12sp"/>
+                <com.google.android.material.slider.Slider
+                    android:id="@+id/slider_temperature_result"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginHorizontal="-12dp"
+                    android:valueFrom="0.1"
+                    android:valueTo="1.5"
+                    android:stepSize="0.1"
+                    android:value="0.9" />
+
+                <com.google.android.material.textview.MaterialTextView
+                    android:id="@+id/label_top_k_result"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="Focus: 50"
+                    android:textColor="?attr/colorOnSurfaceVariant"
+                    android:textSize="12sp"/>
+                <com.google.android.material.slider.Slider
+                    android:id="@+id/slider_top_k_result"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginHorizontal="-12dp"
+                    android:valueFrom="1"
+                    android:valueTo="100"
+                    android:stepSize="1"
+                    android:value="50" />
+            </LinearLayout>
+
+            <View
+                android:layout_width="match_parent"
+                android:layout_height="1dp"
+                android:background="@color/colorOutline"
+                android:layout_marginTop="8dp"/>
+
+            <LinearLayout
+                android:id="@+id/result_drag_handle"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+
+                <com.google.android.material.textview.MaterialTextView
+                    android:id="@+id/text_tone_label"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:textSize="12sp"
+                    android:textStyle="bold"
+                    android:textColor="@color/textColorSecondary"
+                    tools:text="Slopper - Smart" />
+
+                <ImageButton
+                    android:id="@+id/btn_regenerate"
+                    android:layout_width="48dp"
+                    android:layout_height="48dp"
+                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:src="@drawable/ic_regenerate"
+                    android:tooltipText="Regenerate"
+                    app:tint="@color/colorPrimary" />
+
+                <ImageButton
+                    android:id="@+id/btn_copy"
+                    android:layout_width="48dp"
+                    android:layout_height="48dp"
+                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:src="@drawable/ic_content_copy"
+                    android:tooltipText="Copy"
+                    app:tint="@color/colorPrimary" />
+
+                <ImageButton
+                    android:id="@+id/btn_close"
+                    android:layout_width="48dp"
+                    android:layout_height="48dp"
+                    android:background="?attr/selectableItemBackgroundBorderless"
+                    android:src="@drawable/ic_close"
+                    android:tooltipText="Close"
+                    app:tint="@color/colorOnSurfaceVariant" />
+            </LinearLayout>
+
+        </LinearLayout>
+    </com.google.android.material.card.MaterialCardView>
+</FrameLayout>
