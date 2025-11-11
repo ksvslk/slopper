@@ -13,6 +13,3 @@
 .externalNativeBuild
 .cxx
 local.properties
-/qwen2_5/
-/gemma3_270m/
-/gemma3_1b_it/
