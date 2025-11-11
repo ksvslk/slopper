@@ -34,4 +34,5 @@ enum class Model(
         ModelDelivery.ON_DEMAND, // Set other models as ON_DEMAND
         "qwen2_5_license.txt" // <-- Ensure this file exists in your asset pack
     ),
+
 }
