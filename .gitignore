@@ -16,3 +16,9 @@ local.properties*.aab
 *.apk
 *.apks
 /build/
+*.task
+*.aab
+*.apk
+*.apks
+/build/
+/app/release/
