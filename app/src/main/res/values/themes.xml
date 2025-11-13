@@ -1,6 +1,23 @@
 <resources xmlns:tools="http://schemas.android.com/tools">
 
+    <!-- SPLASH THEME - Only for launch -->
+    <style name="Theme.Slopper.Splash" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="android:windowBackground">@drawable/splash_background</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowTranslucentNavigation">true</item>
+        <item name="android:windowTranslucentStatus">true</item>
+        <item name="android:windowDrawsSystemBarBackgrounds">true</item>
+    </style>
+
     <style name="Base.Theme.Slopper" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="android:windowBackground">@color/colorBackground</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowTranslucentNavigation">true</item>
+        <item name="android:windowTranslucentStatus">true</item>
+        <item name="android:windowDrawsSystemBarBackgrounds">true</item>
+
         <item name="colorPrimary">@color/colorPrimary</item>
         <item name="colorOnPrimary">@color/colorOnPrimary</item>
         <item name="colorPrimaryContainer">@color/colorPrimaryContainer</item>
@@ -35,6 +52,11 @@
     <style name="WindowAnimationTransition">
         <item name="android:windowEnterAnimation">@anim/fade_in</item>
         <item name="android:windowExitAnimation">@anim/fade_out</item>
+    </style>
+
+    <style name="NoRippleDropdown" parent="ThemeOverlay.Material3.AutoCompleteTextView">
+        <item name="rippleColor">@android:color/transparent</item>
+        <item name="colorControlHighlight">@android:color/transparent</item>
     </style>
 
 </resources>

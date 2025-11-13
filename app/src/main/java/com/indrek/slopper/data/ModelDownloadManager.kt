@@ -1,10 +1,8 @@
-package com.indrek.slopper
+package com.indrek.slopper.data
 
 import android.content.Context
 import android.util.Log
 import android.widget.Toast
-import androidx.lifecycle.LiveData
-import androidx.lifecycle.MutableLiveData
 import com.google.android.gms.tasks.Task
 import com.google.android.gms.tasks.Tasks
 import com.google.android.play.core.assetpacks.AssetPackLocation
@@ -14,6 +12,11 @@ import com.google.android.play.core.assetpacks.AssetPackState
 import com.google.android.play.core.assetpacks.AssetPackStateUpdateListener
 import com.google.android.play.core.assetpacks.AssetPackStates
 import com.google.android.play.core.assetpacks.model.AssetPackStatus
+import com.indrek.slopper.domain.model.Model
+import com.indrek.slopper.domain.model.ModelDelivery
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -32,6 +35,7 @@ sealed class DownloadStatus {
 }
 
 /**
+ * REFACTORED: Converted from LiveData to StateFlow for consistency with the rest of the app.
  * Singleton object to manage all model asset pack downloads.
  * This lives for the entire application lifecycle, ensuring
  * download state is monitored even when the Activity is not visible.
@@ -43,9 +47,9 @@ object ModelDownloadManager {
     private lateinit var assetPackManager: AssetPackManager
     private lateinit var appContext: Context
 
-    // This is the single source of truth for all model states
-    private val _modelStates = MutableLiveData<Map<String, DownloadStatus>>(emptyMap())
-    val modelStates: LiveData<Map<String, DownloadStatus>> = _modelStates
+    // REFACTORED: Changed from LiveData to StateFlow
+    private val _modelStates = MutableStateFlow<Map<String, DownloadStatus>>(emptyMap())
+    val modelStates: StateFlow<Map<String, DownloadStatus>> = _modelStates.asStateFlow()
 
     private val allModelPackNames by lazy { Model.entries.map { it.assetPackName } }
     private val isInitialized = AtomicBoolean(false)
@@ -69,7 +73,7 @@ object ModelDownloadManager {
                 AssetPackStatus.WAITING_FOR_WIFI -> DownloadStatus.WaitingForWifi
                 AssetPackStatus.FAILED -> DownloadStatus.Failed(state.errorCode())
                 AssetPackStatus.NOT_INSTALLED -> DownloadStatus.NotInstalled
-                else -> _modelStates.value?.get(packName) ?: DownloadStatus.NotInstalled // Keep old state if unknown
+                else -> _modelStates.value[packName] ?: DownloadStatus.NotInstalled // Keep old state if unknown
             }
 
             updateStateMap(packName, newStatus)
@@ -207,7 +211,7 @@ object ModelDownloadManager {
     // --- Private Helper Functions ---
 
     private fun processStateUpdate(states: Map<String, AssetPackState>) {
-        val newStates = _modelStates.value.orEmpty().toMutableMap()
+        val newStates = _modelStates.value.toMutableMap()
         for (model in Model.entries) {
             val packName = model.assetPackName
             val state = states[packName]
@@ -230,13 +234,13 @@ object ModelDownloadManager {
                 }
             }
         }
-        _modelStates.postValue(newStates)
+        _modelStates.value = newStates
     }
 
     private fun updateStateMap(packName: String, status: DownloadStatus) {
-        val newStates = _modelStates.value.orEmpty().toMutableMap()
+        val newStates = _modelStates.value.toMutableMap()
         newStates[packName] = status
-        _modelStates.postValue(newStates)
+        _modelStates.value = newStates
     }
 
     private fun statusToString(status: Int): String {

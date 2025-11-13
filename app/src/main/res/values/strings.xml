@@ -1,3 +1,20 @@
 <resources>
     <string name="app_name">Slopper</string>
+    <string name="premium_required">Premium Required</string>
+    <string name="premium_feature">Premium Feature</string>
+    <string name="unlock_with_premium">Unlock full customization with Slopper Premium</string>
+    <string name="upgrade_to_premium">Upgrade to Premium</string>
+    <string name="not_now">Not Now</string>
+
+    <!-- Prompt Editor Strings -->
+    <string name="reset_prompt">Reset to default</string>
+    <string name="save_prompt">Save prompt</string>
+    <string name="enter_prompt_template">Enter your prompt template</string>
+    <string name="prompt_template_hint">Use {CONTEXT} for text and {TONE} for tone</string>
+
+    <string name="hide_action">Hide action</string>
+    <string name="delete_action">Delete action</string>
+    <string name="reset_action">Reset action</string>
+    <string name="save_action">Save action</string>
+    <string name="enter_action_template">Enter action template</string>
 </resources>

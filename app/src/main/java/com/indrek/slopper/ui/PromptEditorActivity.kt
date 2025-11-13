@@ -1,56 +1,141 @@
-package com.indrek.slopper
+package com.indrek.slopper.ui
 
-import android.content.Context
 import android.content.SharedPreferences
 import android.os.Bundle
-import android.text.Editable
-import android.text.TextWatcher
+import android.text.SpannableString
+import android.text.style.ImageSpan
+// import android.util.TypedValue // No longer needed
 import android.view.LayoutInflater
 import android.view.View
+// import android.view.ViewGroup // No longer needed
 import android.widget.ArrayAdapter
 import android.widget.AutoCompleteTextView
-import android.widget.EditText
-// import android.widget.EditText // No longer needed directly
+import android.widget.FrameLayout
 import android.widget.ImageButton
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.viewModels
+// import androidx.annotation.AttrRes // No longer needed
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import androidx.core.content.edit
+import androidx.core.graphics.drawable.DrawableCompat
+import androidx.core.view.children
+import androidx.lifecycle.lifecycleScope
 import com.google.android.material.card.MaterialCardView
 import com.google.android.material.chip.Chip
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
-import com.google.android.material.textfield.TextInputEditText
 import com.google.android.material.slider.Slider
-import java.util.Locale
+import com.google.android.material.textfield.TextInputEditText
+import com.indrek.slopper.R
+import com.indrek.slopper.data.PREF_KEY_ACTIVE_CATEGORIES
+import com.indrek.slopper.data.PromptRepository
 import com.indrek.slopper.databinding.ActivityPromptEditorBinding
+import com.indrek.slopper.domain.model.defaultCategoryNames
+import com.indrek.slopper.domain.model.getCustomActionsKey
+import com.indrek.slopper.domain.model.getGenericTonesKey
+import com.indrek.slopper.domain.model.getHiddenDefaultActionsKey
+import com.indrek.slopper.domain.model.getHiddenDefaultTonesKey
+import com.indrek.slopper.domain.model.getPromptTemplateKey
+import com.indrek.slopper.domain.model.getTemperatureKey
+import com.indrek.slopper.domain.model.getTopKKey
+import com.revenuecat.purchases.ui.revenuecatui.ExperimentalPreviewRevenueCatUIPurchasesAPI
+import com.revenuecat.purchases.ui.revenuecatui.activity.PaywallActivityLauncher
+import com.revenuecat.purchases.ui.revenuecatui.activity.PaywallResult
+import com.revenuecat.purchases.ui.revenuecatui.activity.PaywallResultHandler
+import dagger.hilt.android.AndroidEntryPoint
+import kotlinx.coroutines.launch
+import java.util.Locale
+import javax.inject.Inject
+import kotlin.collections.forEach
 
-class PromptEditorActivity : AppCompatActivity() {
+
+@OptIn(ExperimentalPreviewRevenueCatUIPurchasesAPI::class)
+@AndroidEntryPoint
+class PromptEditorActivity : AppCompatActivity(), PaywallResultHandler {
 
     private lateinit var binding: ActivityPromptEditorBinding
-    private lateinit var prefs: SharedPreferences
-    private var currentCategoryName: String = "POST" // Default
 
-    private val editorStateMap = mutableMapOf<TextInputEditText, Pair<ImageButton, String>>()
+    private val viewModel: PromptEditorViewModel by viewModels()
+    private lateinit var paywallActivityLauncher: PaywallActivityLauncher
+
+    @Inject
+    lateinit var prefs: SharedPreferences
+
+    @Inject
+    lateinit var promptRepository: PromptRepository
+
+    private var currentCategoryName: String = "POST" // Default
+    private var isPremium: Boolean = false
+
+    private val KEY_CURRENT_CATEGORY = "KEY_CURRENT_CATEGORY"
+
+    // --- NEW: Map to store original titles ---
+    private val originalMenuItemTitles = mutableMapOf<Int, CharSequence>()
+    // --- END NEW ---
+
+    // --- NEW: Centralized overlay color ---
+    /** Helper property to get the semi-transparent overlay color from one place */
+    private val semiTransparentOverlayColor: Int by lazy {
+        val overlayColor = ContextCompat.getColor(this, R.color.colorPrimaryContainer)
+        // Apply 50% alpha (0x80)
+        (overlayColor and 0x00FFFFFF) or 0x80000000.toInt()
+    }
+    // --- END NEW ---
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         binding = ActivityPromptEditorBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
-        prefs = getSharedPreferences(SlopperActivity.PREFS_NAME, Context.MODE_PRIVATE)
+        paywallActivityLauncher = PaywallActivityLauncher(this, this)
 
-        getActiveCategories(this) // Initialize if needed
+        // Observe premium status
+        lifecycleScope.launch {
+            viewModel.isPremium.collect { premium ->
+                isPremium = premium
+                updatePremiumOverlays()
+                updateToolbarMenuLocks(premium) // Update toolbar locks
+            }
+        }
+
+        // Restore the saved category name after a theme change
+        if (savedInstanceState != null) {
+            currentCategoryName = savedInstanceState.getString(KEY_CURRENT_CATEGORY, "POST")
+        }
+
+        // Initialize categories if needed (via repository)
+        promptRepository.getActiveCategories()
 
         setupToolbar()
         setupCategorySpinner()
 
         binding.fabAddAction.setOnClickListener {
-            showAddActionDialog() // This now calls the updated function
+            if (isPremium) {
+                showAddActionDialog()
+            } else {
+                launchPaywallActivity()
+            }
         }
 
+        // Add lock overlay to FAB if not premium
+        updateFabOverlay()
+
         setupLlmSliders()
+    }
+
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        outState.putString(KEY_CURRENT_CATEGORY, currentCategoryName)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // Refresh premium status when returning from purchase flow
+        viewModel.refreshPremiumStatus()
     }
 
     private fun setupLlmSliders() {
@@ -70,7 +155,7 @@ class PromptEditorActivity : AppCompatActivity() {
 
         // Top-K Slider
         binding.sliderTopK.addOnChangeListener { _, value, _ ->
-            binding.labelTopK.text = "Focus: ${value.toInt()}"
+            binding.labelTopK.text = "Options: ${value.toInt()}"
         }
         binding.sliderTopK.addOnSliderTouchListener(object : Slider.OnSliderTouchListener {
             override fun onStartTrackingTouch(slider: Slider) {}
@@ -78,7 +163,7 @@ class PromptEditorActivity : AppCompatActivity() {
                 prefs.edit {
                     putInt(getTopKKey(currentCategoryName), slider.value.toInt())
                 }
-                Toast.makeText(this@PromptEditorActivity, "Focus saved", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this@PromptEditorActivity, "Options saved", Toast.LENGTH_SHORT).show()
             }
         })
     }
@@ -89,14 +174,37 @@ class PromptEditorActivity : AppCompatActivity() {
 
         binding.sliderTopK.value = topK.toFloat()
         binding.sliderTemperature.value = temp
-        binding.labelTopK.text = "Focus: $topK"
+        binding.labelTopK.text = "Options: $topK"
         binding.labelTemperature.text = String.format(Locale.US, "Creativity: %.1f", temp)
     }
 
-    // --- setupToolbar unchanged ---
+    // --- MODIFIED: setupToolbar with premium gating ---
     private fun setupToolbar() {
         binding.toolbar.setNavigationOnClickListener { finish() }
+
+        // --- NEW: Store original titles before setting listener ---
+        val menu = binding.toolbar.menu
+        val itemIds = listOf(
+            R.id.action_reset,
+            R.id.action_add_category,
+            R.id.action_delete_category,
+            R.id.action_restore_defaults
+        )
+        itemIds.forEach { id ->
+            val item = menu.findItem(id)
+            if (item != null) {
+                originalMenuItemTitles[id] = item.title as CharSequence
+            }
+        }
+        // --- END NEW ---
+
         binding.toolbar.setOnMenuItemClickListener { item ->
+            // Check premium for all toolbar actions
+            if (!isPremium) {
+                launchPaywallActivity()
+                return@setOnMenuItemClickListener true
+            }
+
             when (item.itemId) {
                 R.id.action_reset -> {
                     resetCurrentCategory()
@@ -120,42 +228,54 @@ class PromptEditorActivity : AppCompatActivity() {
     }
 
 
-    // --- setupCategorySpinner unchanged ---
     private fun setupCategorySpinner() {
-        var categories = getActiveCategories(this) // Use var to allow modification
-        val adapter = ArrayAdapter(this, android.R.layout.simple_dropdown_item_1line, categories)
-        (binding.spinnerCategorySelection as? AutoCompleteTextView)?.setAdapter(adapter)
+        // 1. Get the fresh list of categories from repository
+        val categories = promptRepository.getActiveCategories()
 
+        // 2. Create the new adapter
+        val adapter = ArrayAdapter(this, android.R.layout.simple_dropdown_item_1line, categories)
+
+        // 3. Validate the restored currentCategoryName.
         if (currentCategoryName !in categories) {
-            currentCategoryName = categories.firstOrNull() ?: "POST" // Fallback
-            if ("POST" !in categories) {
-                val currentCategoriesSet = prefs.getStringSet(PREF_KEY_ACTIVE_CATEGORIES, emptySet())?.toMutableSet() ?: mutableSetOf()
-                currentCategoriesSet.add("POST")
-                prefs.edit{ putStringSet(PREF_KEY_ACTIVE_CATEGORIES, currentCategoriesSet)}
-                categories = getActiveCategories(this)
-                val newAdapter = ArrayAdapter(this, android.R.layout.simple_dropdown_item_1line, categories)
-                (binding.spinnerCategorySelection as? AutoCompleteTextView)?.setAdapter(newAdapter)
-                currentCategoryName = "POST"
-            }
+            currentCategoryName = categories.first()
         }
 
-        binding.spinnerCategorySelection.setOnItemClickListener { _, _, position, _ ->
-            currentCategoryName = categories[position]
+        val autoCompleteTextView = (binding.spinnerCategorySelection as? AutoCompleteTextView)
+
+        // 4. Clear the text that the view auto-restored
+        autoCompleteTextView?.setText(null, false)
+
+        // 5. Set the FULL adapter.
+        autoCompleteTextView?.setAdapter(adapter)
+
+        // 6. Set the correct text back.
+        autoCompleteTextView?.setText(currentCategoryName, false)
+
+
+        // 8. Force the adapter to clear its filter
+        autoCompleteTextView?.post {
+            adapter.filter.filter(null)
+        }
+
+        // 9. Set listener
+        autoCompleteTextView?.onItemClickListener = null // Clear old listener
+        autoCompleteTextView?.setOnItemClickListener { parent, _, position, _ ->
+            val selectedItem = parent.getItemAtPosition(position) as? String ?: return@setOnItemClickListener
+            currentCategoryName = selectedItem
             loadCategoryLlmSettings() // Load settings for new category
             populateEditors()
         }
 
-        binding.spinnerCategorySelection.setText(currentCategoryName, false)
-        loadCategoryLlmSettings() // Load settings for initial category
-        populateEditors() // This must come *after* loading settings
+        // 10. Load editors for the restored category
+        loadCategoryLlmSettings()
+        populateEditors()
     }
 
-    // --- populateEditors unchanged ---
     private fun populateEditors() {
         binding.promptEditorContainer.removeAllViews()
-        editorStateMap.clear()
 
-        val definition = promptDefinitions[currentCategoryName] ?: promptDefinitions["POST"]!!
+        val definition = promptRepository.getPromptDefinition(currentCategoryName)
+            ?: promptRepository.getPromptDefinition("POST")!!
         val inflater = LayoutInflater.from(this)
 
         val prefixKey = getPromptTemplateKey(currentCategoryName, "prefix")
@@ -187,7 +307,7 @@ class PromptEditorActivity : AppCompatActivity() {
         }
     }
 
-    // --- addEditor unchanged ---
+    // --- addEditor MODIFIED ---
     private fun addEditor(
         inflater: LayoutInflater,
         baseLabel: String,
@@ -209,10 +329,25 @@ class PromptEditorActivity : AppCompatActivity() {
         val titleText = editorView.findViewById<TextView>(R.id.prompt_title)
         val expandButton = editorView.findViewById<ImageButton>(R.id.btn_expand_toggle)
         val expandableArea = editorView.findViewById<LinearLayout>(R.id.expandable_content_area)
+
         val editText = editorView.findViewById<TextInputEditText>(R.id.text_input_edit_text)
         val saveButton = editorView.findViewById<ImageButton>(R.id.btn_save_prompt)
         val resetButton = editorView.findViewById<ImageButton>(R.id.btn_reset_prompt)
         val deleteButton = editorView.findViewById<ImageButton>(R.id.btn_delete_prompt)
+
+        expandableArea.visibility = View.GONE
+        expandButton.visibility = View.VISIBLE
+        saveButton.visibility = View.GONE
+
+        editText.isFocusable = false
+        editText.isFocusableInTouchMode = false
+        editText.setOnClickListener {
+            if (isPremium) {
+                showEditDialog(titleText, editText, key, baseLabel, defaultValue, isDeletable, specialColor)
+            } else {
+                showPremiumRequiredDialog()
+            }
+        }
 
         val originalText = savedValue ?: ""
         editText.setText(originalText)
@@ -233,57 +368,57 @@ class PromptEditorActivity : AppCompatActivity() {
             deleteButton.visibility = View.VISIBLE
             resetButton.visibility = View.GONE
             deleteButton.setOnClickListener {
-                handleDeleteCustomAction(key, baseLabel)
+                if (isPremium) {
+                    handleDeleteCustomAction(key, baseLabel)
+                } else {
+                    showPremiumRequiredDialog()
+                }
             }
         } else {
             deleteButton.visibility = View.VISIBLE
             resetButton.visibility = View.VISIBLE
             deleteButton.setOnClickListener {
-                if (specialColor != null) {
-                    Toast.makeText(this, "Cannot hide this special item", Toast.LENGTH_SHORT).show()
+                if (isPremium) {
+                    if (specialColor != null) {
+                        Toast.makeText(this, "Cannot hide this special item", Toast.LENGTH_SHORT).show()
+                    } else {
+                        handleHideDefaultAction(baseLabel)
+                    }
                 } else {
-                    handleHideDefaultAction(baseLabel)
+                    showPremiumRequiredDialog()
                 }
             }
             resetButton.setOnClickListener {
-                handleResetDefaultAction(key, defaultValue, editText, saveButton)
-            }
-        }
-
-        saveButton.setOnClickListener {
-            handleSaveSinglePrompt(key, editText, saveButton)
-            if (isDeletable) {
-                titleText.text = "$baseLabel (Custom)"
-            } else if (editText.text.toString() == defaultValue) {
-                titleText.text = if (specialColor != null) baseLabel else "$baseLabel (Default)"
-            } else {
-                titleText.text = "$baseLabel (Edited)"
-            }
-        }
-
-        editorStateMap[editText] = Pair(saveButton, originalText)
-        editText.addTextChangedListener(object : TextWatcher { /* ... (unchanged text watcher) ... */
-            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
-            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
-            override fun afterTextChanged(s: Editable?) {
-                val state = editorStateMap[editText]
-                val currentSaveButton = state?.first
-                val currentOriginalText = state?.second
-
-                if (s.toString() == currentOriginalText) {
-                    currentSaveButton?.isEnabled = false
-                    currentSaveButton?.alpha = 0.4f
+                if (isPremium) {
+                    handleResetDefaultAction(key, defaultValue, editText, titleText, baseLabel, specialColor)
                 } else {
-                    currentSaveButton?.isEnabled = true
-                    currentSaveButton?.alpha = 1.0f
+                    showPremiumRequiredDialog()
                 }
             }
-        })
+        }
 
-        val toggleExpand = { /* ... (unchanged expand logic) ... */
+        // --- MODIFIED toggleExpand logic ---
+        val toggleExpand = {
+            val existingOverlay = editorView.findViewWithTag<View>("premium_full_overlay")
+
             if (expandableArea.visibility == View.GONE) {
+                // --- EXPANDING ---
                 expandableArea.visibility = View.VISIBLE
                 expandButton.animate().rotation(180f).setDuration(200).start()
+
+                if (!isPremium && existingOverlay == null) {
+                    // --- MODIFIED: Create ONE overlay ---
+                    headerBar.post { // Wait for header height
+                        val overlay = createFullLockOverlay(headerBar.height)
+                        overlay.tag = "premium_full_overlay"
+                        overlay.layoutParams = FrameLayout.LayoutParams(
+                            FrameLayout.LayoutParams.MATCH_PARENT,
+                            FrameLayout.LayoutParams.MATCH_PARENT
+                        )
+                        editorView.addView(overlay)
+                    }
+                    // --- END MODIFIED ---
+                }
 
                 editorView.post {
                     val scrollViewHeight = binding.scrollView.height
@@ -299,13 +434,19 @@ class PromptEditorActivity : AppCompatActivity() {
                     }
                 }
             } else {
+                // --- COLLAPSING ---
                 expandableArea.visibility = View.GONE
                 expandButton.animate().rotation(0f).setDuration(200).start()
+
+                // Remove the one overlay
+                existingOverlay?.let { editorView.removeView(it) }
             }
         }
 
         headerBar.setOnClickListener { toggleExpand() }
         expandButton.setOnClickListener { toggleExpand() }
+        // --- END MODIFIED ---
+
 
         if (isGenericToneEditor) {
             val managerArea = editorView.findViewById<LinearLayout>(R.id.generic_tones_manager_area)
@@ -318,10 +459,51 @@ class PromptEditorActivity : AppCompatActivity() {
         binding.promptEditorContainer.addView(editorView)
     }
 
-    // --- populateGenericTonesList unchanged ---
+    private fun showEditDialog(
+        titleText: TextView,
+        rowEditText: TextInputEditText,
+        key: String,
+        baseLabel: String,
+        defaultValue: String?,
+        isDeletable: Boolean,
+        specialColor: Int?
+    ) {
+        val inflater = LayoutInflater.from(this)
+        val dialogView = inflater.inflate(R.layout.dialog_edit_prompt, null)
+        val dialogEditText = dialogView.findViewById<TextInputEditText>(R.id.edit_prompt_content)
+
+        dialogEditText.setText(rowEditText.text.toString())
+        dialogEditText.requestFocus()
+
+        MaterialAlertDialogBuilder(this)
+            .setTitle("Edit: $baseLabel")
+            .setView(dialogView)
+            .setPositiveButton("Save") { dialog, _ ->
+                val newText = dialogEditText.text.toString()
+
+                prefs.edit { putString(key, newText) }
+                rowEditText.setText(newText)
+
+                if (isDeletable) {
+                    titleText.text = "$baseLabel (Custom)"
+                } else if (newText == defaultValue) {
+                    titleText.text = if (specialColor != null) baseLabel else "$baseLabel (Default)"
+                } else {
+                    titleText.text = "$baseLabel (Edited)"
+                }
+
+                Toast.makeText(this, "Prompt saved!", Toast.LENGTH_SHORT).show()
+                dialog.dismiss()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+
     private fun populateGenericTonesList(chipContainer: LinearLayout) {
         chipContainer.removeAllViews()
-        val definition = promptDefinitions[currentCategoryName] ?: promptDefinitions["POST"]!!
+        val definition = promptRepository.getPromptDefinition(currentCategoryName)
+            ?: promptRepository.getPromptDefinition("POST")!!
         val inflater = LayoutInflater.from(this)
 
         val addChip = inflater.inflate(R.layout.chip_add, chipContainer, false) as Chip
@@ -357,19 +539,16 @@ class PromptEditorActivity : AppCompatActivity() {
         }
     }
 
-    // --- showAddToneDialog unchanged ---
     private fun showAddToneDialog(chipContainer: LinearLayout) {
-        // 1. Inflate the new layout
         val inflater = LayoutInflater.from(this)
         val dialogView = inflater.inflate(R.layout.dialog_add_tone, null)
-        val nameEditText = dialogView.findViewById<TextInputEditText>(R.id.edit_tone_name) // Find the new component
+        val nameEditText = dialogView.findViewById<TextInputEditText>(R.id.edit_tone_name)
 
-        // 2. Use the Material builder
         MaterialAlertDialogBuilder(this)
             .setTitle("Add Custom Tone")
-            .setView(dialogView) // Set the new layout
+            .setView(dialogView)
             .setPositiveButton("Add") { dialog, _ ->
-                val label = nameEditText.text.toString().trim() // Get text from new component
+                val label = nameEditText.text.toString().trim()
                 if (label.isNotEmpty()) {
                     val key = getGenericTonesKey(currentCategoryName)
                     val customTones = prefs.getStringSet(key, emptySet())?.toMutableSet() ?: mutableSetOf()
@@ -387,7 +566,6 @@ class PromptEditorActivity : AppCompatActivity() {
             .show()
     }
 
-    // --- handleDeleteTone unchanged ---
     private fun handleDeleteTone(toneLabel: String, chipContainer: LinearLayout, isDefault: Boolean) {
         if (isDefault) {
             val key = getHiddenDefaultTonesKey(currentCategoryName)
@@ -408,21 +586,6 @@ class PromptEditorActivity : AppCompatActivity() {
         }
     }
 
-    // --- handleSaveSinglePrompt unchanged ---
-    private fun handleSaveSinglePrompt(key: String, editText: TextInputEditText, saveButton: ImageButton) {
-        val newText = editText.text.toString()
-        prefs.edit {
-            putString(key, newText)
-        }
-
-        saveButton.isEnabled = false
-        saveButton.alpha = 0.4f
-        editorStateMap[editText] = Pair(saveButton, newText)
-
-        Toast.makeText(this, "Prompt saved!", Toast.LENGTH_SHORT).show()
-    }
-
-    // --- handleDeleteCustomAction unchanged ---
     private fun handleDeleteCustomAction(key: String, label: String) {
         val actionLabel = label.removePrefix("Action: ").substringBefore(" (Custom)")
 
@@ -436,7 +599,6 @@ class PromptEditorActivity : AppCompatActivity() {
             .show()
     }
 
-    // --- performDeleteAction unchanged ---
     private fun performDeleteAction(key: String, actionLabel: String) {
         val customActionsKey = getCustomActionsKey(currentCategoryName)
         val customActions = prefs.getStringSet(customActionsKey, emptySet())?.toMutableSet() ?: mutableSetOf()
@@ -451,7 +613,6 @@ class PromptEditorActivity : AppCompatActivity() {
         }
     }
 
-    // --- handleHideDefaultAction unchanged ---
     private fun handleHideDefaultAction(baseLabel: String) {
         val actionLabel = baseLabel.removePrefix("Action: ")
 
@@ -471,12 +632,13 @@ class PromptEditorActivity : AppCompatActivity() {
             .show()
     }
 
-    // --- handleResetDefaultAction unchanged ---
     private fun handleResetDefaultAction(
         key: String,
         defaultValue: String?,
         editText: TextInputEditText,
-        saveButton: ImageButton
+        titleText: TextView,
+        baseLabel: String,
+        specialColor: Int?
     ) {
         prefs.edit {
             remove(key)
@@ -485,34 +647,29 @@ class PromptEditorActivity : AppCompatActivity() {
         val defaultText = defaultValue ?: ""
         editText.setText(defaultText)
 
-        saveButton.isEnabled = false
-        saveButton.alpha = 0.4f
-        editorStateMap[editText] = Pair(saveButton, defaultText)
+        titleText.text = if (specialColor != null) baseLabel else "$baseLabel (Default)"
 
-        populateEditors()
         Toast.makeText(this, "Prompt reset to default", Toast.LENGTH_SHORT).show()
     }
 
-    // ### MODIFIED: Uses new dialog layout and saves template ###
-    private fun showAddActionDialog() { // For Specific Actions (Called by FAB)
+    private fun showAddActionDialog() {
         val inflater = LayoutInflater.from(this)
-        val dialogView = inflater.inflate(R.layout.dialog_add_action, null) // Use new layout
+        val dialogView = inflater.inflate(R.layout.dialog_add_action, null)
         val labelEditText = dialogView.findViewById<TextInputEditText>(R.id.edit_action_label)
         val templateEditText = dialogView.findViewById<TextInputEditText>(R.id.edit_action_template)
 
         MaterialAlertDialogBuilder(this)
             .setTitle("Add Custom Action")
-            .setView(dialogView) // Set new layout
+            .setView(dialogView)
             .setPositiveButton("Add") { dialog, _ ->
                 val label = labelEditText.text.toString().trim()
-                val template = templateEditText.text.toString() // Get template text
+                val template = templateEditText.text.toString()
 
                 if (label.isEmpty()) {
                     Toast.makeText(this, "Action label cannot be empty", Toast.LENGTH_SHORT).show()
-                    // Need to prevent dismiss here if possible, or handle re-showing dialog
                     return@setPositiveButton
                 }
-                if (template.isEmpty()) { // Basic check for template
+                if (template.isEmpty()) {
                     Toast.makeText(this, "Action template cannot be empty", Toast.LENGTH_SHORT).show()
                     return@setPositiveButton
                 }
@@ -521,7 +678,8 @@ class PromptEditorActivity : AppCompatActivity() {
                 val customActionsKey = getCustomActionsKey(currentCategoryName)
                 val customActions = prefs.getStringSet(customActionsKey, emptySet())?.toMutableSet() ?: mutableSetOf()
 
-                val definition = promptDefinitions[currentCategoryName] ?: promptDefinitions["POST"]!!
+                val definition = promptRepository.getPromptDefinition(currentCategoryName)
+                    ?: promptRepository.getPromptDefinition("POST")!!
                 val isConflict = definition.specificActions.any { it.label.equals(label, true) } ||
                         definition.genericTones.any { it.equals(label, true) }
 
@@ -530,7 +688,6 @@ class PromptEditorActivity : AppCompatActivity() {
                 } else if (customActions.add(label)) {
                     prefs.edit {
                         putStringSet(customActionsKey, customActions)
-                        // ### MODIFIED: Save the template too ###
                         putString(getPromptTemplateKey(currentCategoryName, label), template)
                     }
                     populateEditors()
@@ -538,13 +695,11 @@ class PromptEditorActivity : AppCompatActivity() {
                 } else {
                     Toast.makeText(this, "Action '$label' already exists", Toast.LENGTH_SHORT).show()
                 }
-                // Dialog dismisses automatically
             }
             .setNegativeButton("Cancel", null)
             .show()
     }
 
-    // --- resetCurrentCategory unchanged ---
     private fun resetCurrentCategory() {
         MaterialAlertDialogBuilder(this)
             .setTitle("Reset All Prompts?")
@@ -556,14 +711,16 @@ class PromptEditorActivity : AppCompatActivity() {
             .show()
     }
 
-    // --- performResetCategory unchanged ---
     private fun performResetCategory() {
         prefs.edit {
-            val definition = promptDefinitions[currentCategoryName] ?: promptDefinitions["POST"]!!
+            val definition = promptRepository.getPromptDefinition(currentCategoryName)
+                ?: promptRepository.getPromptDefinition("POST")!!
             val keysToClear = mutableListOf<String>()
 
             keysToClear.add(getPromptTemplateKey(currentCategoryName, "prefix"))
+            // --- TYPO FIX ---
             keysToClear.add(getPromptTemplateKey(currentCategoryName, "generic"))
+            // --- END TYPO FIX ---
 
             definition.specificActions.forEach {
                 keysToClear.add(getPromptTemplateKey(currentCategoryName, it.label))
@@ -597,10 +754,9 @@ class PromptEditorActivity : AppCompatActivity() {
         Toast.makeText(this, "$currentCategoryName category reset to default", Toast.LENGTH_SHORT).show()
     }
 
-    // ### MODIFIED: Uses simplified dialog and adds default prompts ###
-    private fun showAddCategoryDialog() { // For Categories (Called by Menu)
+    private fun showAddCategoryDialog() {
         val inflater = LayoutInflater.from(this)
-        val dialogView = inflater.inflate(R.layout.dialog_add_category, null) // Use simplified layout
+        val dialogView = inflater.inflate(R.layout.dialog_add_category, null)
         val nameEditText = dialogView.findViewById<TextInputEditText>(R.id.edit_category_name)
 
         MaterialAlertDialogBuilder(this)
@@ -611,7 +767,6 @@ class PromptEditorActivity : AppCompatActivity() {
 
                 if (newName.isEmpty()) {
                     Toast.makeText(this, "Category name cannot be empty", Toast.LENGTH_SHORT).show()
-                    // Re-show dialog or add better validation? For now, just return.
                     return@setPositiveButton
                 }
 
@@ -628,12 +783,9 @@ class PromptEditorActivity : AppCompatActivity() {
                         putString(getPromptTemplateKey(newName, "prefix"), defaultPrefix)
                         putString(getPromptTemplateKey(newName, "generic"), defaultGenericTemplate)
                         putString(getPromptTemplateKey(newName, defaultActionLabel), defaultActionTemplate)
-                        // ### ADDED: Set default LLM params ###
                         putInt(getTopKKey(newName), 64)
                         putFloat(getTemperatureKey(newName), 1.0f)
-                        // ### END ADDED ###
                         putStringSet(getCustomActionsKey(newName), setOf(defaultActionLabel)) // Add the first action
-                        // Initialize other lists as empty
                         putStringSet(getHiddenDefaultActionsKey(newName), emptySet())
                         putStringSet(getGenericTonesKey(newName), emptySet())
                         putStringSet(getHiddenDefaultTonesKey(newName), emptySet())
@@ -649,7 +801,6 @@ class PromptEditorActivity : AppCompatActivity() {
             .show()
     }
 
-    // --- showDeleteCategoryDialog unchanged ---
     private fun showDeleteCategoryDialog() {
         MaterialAlertDialogBuilder(this)
             .setTitle("Delete Category '$currentCategoryName'?")
@@ -661,10 +812,9 @@ class PromptEditorActivity : AppCompatActivity() {
             .show()
     }
 
-    // --- performDeleteCategory unchanged ---
     private fun performDeleteCategory() {
         val categoryToDelete = currentCategoryName
-        val currentCategories = prefs.getStringSet(PREF_KEY_ACTIVE_CATEGORIES, emptySet())?.toMutableSet() ?: return
+        val currentCategories = prefs.getStringSet(PREF_KEY_ACTIVE_CATEGORIES, emptySet())?.toMutableSet() ?: mutableSetOf()
 
         if (currentCategories.remove(categoryToDelete)) {
             if (currentCategories.isEmpty()) {
@@ -675,21 +825,24 @@ class PromptEditorActivity : AppCompatActivity() {
             prefs.edit {
                 putStringSet(PREF_KEY_ACTIVE_CATEGORIES, currentCategories)
 
-                // Remove all associated preferences
-                val definition = promptDefinitions[categoryToDelete] // Get defaults (might be null)
+                val definition = promptRepository.getPromptDefinition(categoryToDelete)
                 val customActionsKey = getCustomActionsKey(categoryToDelete)
                 val customActions = prefs.getStringSet(customActionsKey, emptySet()) ?: emptySet()
 
                 remove(getPromptTemplateKey(categoryToDelete, "prefix"))
                 remove(getPromptTemplateKey(categoryToDelete, "generic"))
-                definition?.specificActions?.forEach { remove(getPromptTemplateKey(categoryToDelete, it.label)) }
+                definition?.specificActions?.forEach { remove(
+                    getPromptTemplateKey(
+                        categoryToDelete,
+                        it.label
+                    )
+                ) }
                 customActions.forEach { remove(getPromptTemplateKey(categoryToDelete, it)) }
 
                 remove(customActionsKey)
                 remove(getHiddenDefaultActionsKey(categoryToDelete))
                 remove(getGenericTonesKey(categoryToDelete))
                 remove(getHiddenDefaultTonesKey(categoryToDelete))
-                // ### ADDED: Remove LLM params ###
                 remove(getTopKKey(categoryToDelete))
                 remove(getTemperatureKey(categoryToDelete))
             }
@@ -701,7 +854,6 @@ class PromptEditorActivity : AppCompatActivity() {
         }
     }
 
-    // --- showRestoreDefaultsDialog unchanged ---
     private fun showRestoreDefaultsDialog() {
         MaterialAlertDialogBuilder(this)
             .setTitle("Restore Defaults?")
@@ -713,12 +865,11 @@ class PromptEditorActivity : AppCompatActivity() {
             .show()
     }
 
-    // --- performRestoreDefaults unchanged ---
     private fun performRestoreDefaults() {
         prefs.edit {
             putStringSet(PREF_KEY_ACTIVE_CATEGORIES, defaultCategoryNames.toSet())
 
-            val allPossibleCategories = (getActiveCategories(this@PromptEditorActivity) + defaultCategoryNames).toSet()
+            val allPossibleCategories = (promptRepository.getActiveCategories() + defaultCategoryNames).toSet()
             allPossibleCategories.forEach { categoryName ->
                 remove(getHiddenDefaultActionsKey(categoryName))
                 remove(getHiddenDefaultTonesKey(categoryName))
@@ -728,5 +879,175 @@ class PromptEditorActivity : AppCompatActivity() {
         currentCategoryName = "POST"
         setupCategorySpinner()
         Toast.makeText(this, "Default categories restored", Toast.LENGTH_SHORT).show()
+    }
+
+    // --- MODIFIED FUNCTION ---
+    /**
+     * Adds or removes lock icons from the toolbar menu based on premium status.
+     * Uses an ImageSpan to force the icon to appear in the overflow menu.
+     */
+    private fun updateToolbarMenuLocks(isPremium: Boolean) {
+        val menu = binding.toolbar.menu ?: return
+        val itemIds = listOf(
+            R.id.action_reset,
+            R.id.action_add_category,
+            R.id.action_delete_category,
+            R.id.action_restore_defaults
+        )
+
+        itemIds.forEach { id ->
+            val item = menu.findItem(id) ?: return@forEach
+            // --- MODIFIED: Get title from our map ---
+            val originalTitle = originalMenuItemTitles[id] ?: item.title // Fallback
+
+            if (isPremium) {
+                // Restore original title if it's currently a SpannableString
+                if (item.title?.javaClass == SpannableString::class) {
+                    item.title = originalTitle
+                }
+            } else {
+                // Add lock icon, but only if it's not already a SpannableString
+                if (item.title?.javaClass != SpannableString::class) {
+                    // --- MODIFIED: Use R.color.colorPrimary ---
+                    val premiumColor = ContextCompat.getColor(this, R.color.colorPrimary)
+
+                    val lockDrawable = ContextCompat.getDrawable(this, R.drawable.ic_lock_premium)?.mutate()
+                    lockDrawable?.let {
+                        DrawableCompat.setTint(it, premiumColor)
+
+                        // --- MODIFIED: Use fixed 18dp size ---
+                        val size = (18 * resources.displayMetrics.density).toInt()
+                        it.setBounds(0, 0, size, size)
+
+                        // --- MODIFIED: Added an extra space for padding ---
+                        val spannableTitle = SpannableString("   $originalTitle")
+                        // --- END MODIFIED ---
+
+                        // --- MODIFIED: Use 2 (ALIGN_CENTER) for better centering ---
+                        val imageSpan = ImageSpan(it, 2 /* DynamicDrawableSpan.ALIGN_CENTER */)
+                        // --- END MODIFIED ---
+
+                        spannableTitle.setSpan(imageSpan, 0, 1, 0)
+                        item.title = spannableTitle
+                    }
+                }
+            }
+        }
+    }
+    // --- END MODIFIED FUNCTION ---
+
+    /**
+     * Shows a dialog informing the user that premium is required for this action.
+     */
+    private fun showPremiumRequiredDialog() {
+        launchPaywallActivity()
+    }
+
+    /**
+     * Launch the RevenueCat paywall
+     */
+    private fun launchPaywallActivity() {
+        paywallActivityLauncher.launchIfNeeded(requiredEntitlementIdentifier = "")
+    }
+
+    // --- REMOVED FUNCTION ---
+    // private fun createHeaderOverlay(): View { ... }
+    // --- END REMOVED FUNCTION ---
+
+    // --- MODIFIED FUNCTION ---
+    /**
+     * Creates a single, seamless lock overlay for an expanded card.
+     * The overlay is visual-only at the top (over the header) but clickable
+     * over the content area.
+     * @param headerHeight The height of the header view, to offset the clickable area.
+     */
+    private fun createFullLockOverlay(headerHeight: Int): FrameLayout {
+        val dpToPx = { dp: Int -> (dp * resources.displayMetrics.density).toInt() }
+        val premiumColor = ContextCompat.getColor(this, R.color.colorPrimary)
+
+        // 1. The Root Overlay (visual background, passes clicks)
+        val overlay = FrameLayout(this).apply {
+            setBackgroundColor(semiTransparentOverlayColor)
+            elevation = dpToPx(4).toFloat()
+            // Let clicks pass through to children
+            isClickable = false
+            isFocusable = false
+        }
+
+        // 2. The Lock Icon (centered)
+        val lockIcon = ImageView(this).apply {
+            val size = dpToPx(48)
+            layoutParams = FrameLayout.LayoutParams(size, size).apply {
+                gravity = android.view.Gravity.CENTER
+            }
+            setImageResource(R.drawable.ic_lock_premium)
+            setColorFilter(premiumColor)
+        }
+
+        // 3. The Click Blocker (covers content area only)
+        val clickableBlocker = View(this).apply {
+            val params = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+            )
+            params.topMargin = headerHeight // <-- The magic!
+            layoutParams = params
+
+            isClickable = true // Intercepts clicks
+            isFocusable = true
+            setOnClickListener {
+                launchPaywallActivity() // Launch paywall on click
+            }
+        }
+
+        // Add children to the root overlay
+        overlay.addView(lockIcon)
+        overlay.addView(clickableBlocker) // Add blocker on top of lock icon
+
+        return overlay
+    }
+    // --- END MODIFIED FUNCTION ---
+
+    /**
+     * Update lock overlays based on premium status (FAB only)
+     * Editor overlays are now handled by toggleExpand
+     */
+    private fun updatePremiumOverlays() {
+        updateFabOverlay()
+    }
+
+    /**
+     * Update the FAB overlay based on premium status
+     */
+    private fun updateFabOverlay() {
+        if (!isPremium) {
+            // --- MODIFIED: Use R.color.colorOnPrimary ---
+            val premiumColor = ContextCompat.getColor(this, R.color.colorOnPrimary)
+
+            // --- MODIFIED: Remove transparency, set lock icon ---
+            binding.fabAddAction.alpha = 1.0f
+            binding.fabAddAction.setImageResource(R.drawable.ic_lock_premium)
+            binding.fabAddAction.imageTintList = android.content.res.ColorStateList.valueOf(premiumColor)
+        } else {
+            binding.fabAddAction.alpha = 1.0f
+            binding.fabAddAction.setImageResource(android.R.drawable.ic_input_add)
+            binding.fabAddAction.imageTintList = null
+        }
+    }
+
+    override fun onActivityResult(result: PaywallResult) {
+        when (result) {
+            is PaywallResult.Purchased,
+            is PaywallResult.Restored -> {
+                viewModel.refreshPremiumStatus()
+                Toast.makeText(this, "Premium activated! Enjoy full access.", Toast.LENGTH_SHORT).show()
+            }
+            is PaywallResult.Cancelled -> {
+                // User cancelled, do nothing
+            }
+            is PaywallResult.Error -> {
+                Toast.makeText(this, "Error: ${result.error.message}", Toast.LENGTH_SHORT).show()
+            }
+        }
     }
 }

@@ -3,6 +3,8 @@ import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
+    id("org.jetbrains.kotlin.kapt") // <-- THE FIX: Apply by ID
+    alias(libs.plugins.hilt)        // <-- Apply Hilt
 }
 
 android {
@@ -17,7 +19,7 @@ android {
         applicationId = "com.indrek.slopper"
         minSdk = 26
         targetSdk = 36
-        versionCode = 2
+        versionCode = 5
         versionName = "1.0.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
@@ -29,7 +31,7 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            isMinifyEnabled = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
@@ -56,9 +58,19 @@ dependencies {
     // Keep core and UI libraries
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.appcompat) // Use the 'androidx' prefixed alii
+
     // as for consistency
     implementation(libs.material)
     implementation(libs.androidx.cardview) // Use the 'androidx' prefixed alias
+
+// --- ADD HILT ---
+    implementation(libs.hilt.android)
+    kapt(libs.hilt.compiler) // This line now works because the plugin is applied
+
+    // --- ADD VIEWMODEL & LIFECYCLE ---
+    implementation(libs.androidx.lifecycle.viewmodel.ktx)
+    implementation(libs.androidx.lifecycle.runtime.ktx)
+    implementation(libs.androidx.activity.ktx) // For 'by viewModels'
 
     // Keep your other libraries
     implementation(libs.androidx.activity)
@@ -71,11 +83,15 @@ dependencies {
     implementation(libs.play.services.tasks)
     implementation(libs.purchases)
     implementation(libs.purchases.ui)
-    implementation(libs.integrity)
     implementation(libs.play.services.time)
 
     // Test dependencies
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
+}
+
+
+kapt {
+    correctErrorTypes = true
 }

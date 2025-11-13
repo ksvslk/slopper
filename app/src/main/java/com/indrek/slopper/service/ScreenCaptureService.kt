@@ -1,12 +1,15 @@
 package com.indrek.slopper.service
 
-import android.Manifest
-import android.app.*
+import android.app.Activity
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.app.Service
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
-import android.content.pm.PackageManager
 import android.content.res.Resources
 import android.graphics.Bitmap
 import android.graphics.PixelFormat
@@ -26,44 +29,34 @@ import android.util.Log
 import android.widget.Toast
 import androidx.annotation.RequiresApi
 import androidx.core.app.NotificationCompat
-import androidx.core.content.ContextCompat
-import androidx.lifecycle.LiveData
-import androidx.lifecycle.MutableLiveData
+import androidx.core.graphics.createBitmap
 import com.google.mediapipe.tasks.genai.llminference.LlmInference
 import com.google.mediapipe.tasks.genai.llminference.LlmInferenceSession
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
-import com.indrek.slopper.SlopperActivity
-import com.indrek.slopper.Model
-
-import java.util.concurrent.Executors
-import androidx.core.graphics.createBitmap
-import androidx.core.content.edit
-// --- REMOVED ASSET PACK IMPORTS ---
+import com.indrek.slopper.C.PREFS_NAME
+import com.indrek.slopper.C.PREMIUM_ENTITLEMENT_ID
+import com.indrek.slopper.domain.model.Model
+import com.indrek.slopper.data.ModelDownloadManager
 import com.indrek.slopper.R
-// --- MODIFIED: Imports for Limit Check ---
-import com.indrek.slopper.SlopperActivity.Companion.FREE_TIER_LIMIT
-import com.indrek.slopper.SlopperActivity.Companion.KEY_DAILY_LIMIT_COUNT
-import com.indrek.slopper.SlopperActivity.Companion.KEY_DAILY_LIMIT_DAY
-import com.indrek.slopper.SlopperActivity.Companion.PREFS_NAME
-import com.indrek.slopper.SlopperActivity.Companion.PREMIUM_ENTITLEMENT_ID
-import com.indrek.slopper.SlopperApplication // <-- ADD THIS IMPORT
-import com.revenuecat.purchases.CacheFetchPolicy
+import com.indrek.slopper.ui.SlopperActivity
+import com.indrek.slopper.data.ServiceStateRepository
+import com.indrek.slopper.data.UserLimitRepository
+import com.indrek.slopper.domain.usecase.GeneratePromptUseCase
+import com.indrek.slopper.domain.model.getTemperatureKey
+import com.indrek.slopper.domain.model.getTopKKey
 import com.revenuecat.purchases.Purchases
+import com.revenuecat.purchases.VerificationResult
 import com.revenuecat.purchases.getCustomerInfoWith
-import java.util.Calendar
-// --- END MODIFIED ---
-import com.indrek.slopper.generatePrompt
-import com.indrek.slopper.getTemperatureKey
-import com.indrek.slopper.getTopKKey
-// --- ADDED SINGLETON IMPORT ---
-import com.indrek.slopper.ModelDownloadManager
-import java.io.File
+import dagger.hilt.android.AndroidEntryPoint
 import java.lang.IllegalStateException
+import java.util.concurrent.Executors
+import javax.inject.Inject
 
+@AndroidEntryPoint
 class ScreenCaptureService : Service() {
-    // ... (All properties like mediaProjection, virtualDisplay, etc. are unchanged) ...
+
     private var mediaProjection: MediaProjection? = null
     private var virtualDisplay: VirtualDisplay? = null
     private var imageReader: ImageReader? = null
@@ -75,25 +68,22 @@ class ScreenCaptureService : Service() {
 
     private val executor = Executors.newSingleThreadExecutor()
 
-    // --- MODIFICATION: START ---
-    private var configChangeReceiver: BroadcastReceiver? = null
-    // --- MODIFICATION: END ---
+    @Inject
+    lateinit var userLimitRepo: UserLimitRepository
+    @Inject
+    lateinit var serviceStateRepo: ServiceStateRepository
 
-    // --- ADDED: Helper to get the application class ---
-    private val slopperApp: SlopperApplication
-        get() = applicationContext as SlopperApplication
-    // --- END ADDED ---
+    @Inject lateinit var generatePromptUseCase: GeneratePromptUseCase
 
     private val permissionCheckRunnable = object : Runnable {
         override fun run() {
             if (!Settings.canDrawOverlays(this@ScreenCaptureService)) {
                 Log.w(TAG, "Overlay permission revoked while service running. Stopping service.")
                 Toast.makeText(this@ScreenCaptureService, "Overlay permission revoked. Stopping capture session.", Toast.LENGTH_LONG).show()
-                getSharedPreferences(SlopperActivity.PREFS_NAME, MODE_PRIVATE).edit().apply {
+                getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit().apply {
                     putBoolean(SlopperActivity.KEY_SERVICES_ENABLED, false)
                     apply()
                 }
-                _isServiceRunning.postValue(false)
                 stopSelf()
             } else {
                 handler.postDelayed(this, 2000)
@@ -105,12 +95,10 @@ class ScreenCaptureService : Service() {
         override fun onStop() {
             super.onStop()
             Log.w(TAG, "MediaProjection was stopped externally. Stopping service.")
-            _isServiceRunning.postValue(false)
             stopSelf()
         }
     }
 
-    // ... (Companion object is unchanged) ...
     companion object {
         const val TAG = "ScreenCaptureService"
         const val NOTIFICATION_ID = 123
@@ -121,10 +109,7 @@ class ScreenCaptureService : Service() {
         const val EXTRA_DATA = "data"
         const val EXTRA_SINGLE_REPLY = "extra_single_reply"
         const val EXTRA_IS_REGENERATION = "is_regeneration"
-        const val EXTRA_ERROR_MESSAGE = "extra_error_message" // --- ADDED ---
-
-        private val _isServiceRunning = MutableLiveData<Boolean>(false)
-        val isServiceRunning: LiveData<Boolean> = _isServiceRunning
+        const val EXTRA_ERROR_MESSAGE = "extra_error_message"
 
         fun getStartIntent(context: Context, resultCode: Int, data: Intent): Intent {
             return Intent(context, ScreenCaptureService::class.java).apply {
@@ -134,23 +119,18 @@ class ScreenCaptureService : Service() {
         }
     }
 
-    // ... (onCreate is unchanged) ...
     @RequiresApi(Build.VERSION_CODES.TIRAMISU)
     override fun onCreate() {
         super.onCreate()
         Log.d(TAG, "onCreate")
-        _isServiceRunning.postValue(true)
+        serviceStateRepo.setCaptureServiceState(true)
         createNotificationChannel()
 
         commandReceiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context?, intent: Intent?) {
                 if (intent?.action == ACTION_CAPTURE_AND_RECOGNIZE) {
-
-                    // --- MODIFIED: This is the "Security Check" ---
-                    // All requests, new or regeneration, must pass this check.
-                    checkLimitAndProceed_Secure(
+                    checkLimitAndProceedSecure(
                         onSuccess = {
-                            // Limit OK! Proceed with the original logic
                             val isRegeneration = intent.getBooleanExtra(EXTRA_IS_REGENERATION, false)
                             if (isRegeneration) {
                                 Log.d(TAG, "Received regeneration command")
@@ -163,255 +143,115 @@ class ScreenCaptureService : Service() {
                             }
                         },
                         onFailure = { errorMsg ->
-                            // Limit reached or error. Show error and stop.
                             handler.post {
                                 Toast.makeText(this@ScreenCaptureService, errorMsg, Toast.LENGTH_LONG).show()
                             }
-                            // Broadcast a completion (with null) to stop any loading spinners
                             broadcastCompletion(null, errorMsg)
                         }
                     )
-                    // --- END MODIFIED ---
                 }
             }
         }
-        val receiverFlags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) RECEIVER_EXPORTED else 0
+        val receiverFlags = RECEIVER_EXPORTED
         try {
             registerReceiver(commandReceiver, IntentFilter(ACTION_CAPTURE_AND_RECOGNIZE), null, handler, receiverFlags)
             Log.d(TAG, "Command receiver registered.")
         } catch (e: Exception) {
             Log.e(TAG, "Error registering receiver", e)
-            _isServiceRunning.postValue(false)
             stopSelf()
         }
-
-        // --- MODIFICATION: START ---
-        // Register receiver for configuration changes (like rotation)
-        configChangeReceiver = object : BroadcastReceiver() {
-            override fun onReceive(context: Context?, intent: Intent?) {
-                if (intent?.action == Intent.ACTION_CONFIGURATION_CHANGED) {
-                    Log.d(TAG, "Configuration changed. Re-setting up VirtualDisplay.")
-                    // Post to handler to ensure it runs on the service's main thread
-                    handler.post { setupVirtualDisplay() }
-                }
-            }
-        }
-        try {
-            val configFilter = IntentFilter(Intent.ACTION_CONFIGURATION_CHANGED)
-            registerReceiver(configChangeReceiver, configFilter, null, handler)
-            Log.d(TAG, "ConfigChange receiver registered.")
-        } catch (e: Exception) {
-            Log.e(TAG, "Error registering ConfigChange receiver", e)
-            // Not fatal, but logging it
-        }
-        // --- MODIFICATION: END ---
 
         handler.postDelayed(permissionCheckRunnable, 2000)
     }
 
-    // --- This function is UNCHANGED ---
-    private fun checkLimitAndProceed_Secure(onSuccess: () -> Unit, onFailure: (String) -> Unit) {
-        // 1. Check RevenueCat (fetch from network to be sure)
+    private fun checkLimitAndProceedSecure(onSuccess: () -> Unit, onFailure: (String) -> Unit) {
         Purchases.sharedInstance.getCustomerInfoWith(
-            fetchPolicy = CacheFetchPolicy.FETCH_CURRENT,
             onSuccess = { customerInfo ->
-                val isPremium = customerInfo.entitlements[PREMIUM_ENTITLEMENT_ID]?.isActive == true
+                val entitlement = customerInfo.entitlements[PREMIUM_ENTITLEMENT_ID]
+                val isActive = entitlement?.isActive == true
+                val isVerified = customerInfo.entitlements.verification != VerificationResult.FAILED
+                val isPremium = isActive && isVerified
 
                 if (isPremium) {
-                    // User is premium, all good!
                     Log.d(TAG, "Premium user confirmed. Proceeding.")
                     onSuccess()
                     return@getCustomerInfoWith
                 }
 
-                // --- User is FREE. Check and increment the counter ---
-                if (checkAndIncrementCounter()) {
-                    // Limit OK
+                if (userLimitRepo.canIncrementGeneration()) {
                     Log.d(TAG, "Free user limit OK. Proceeding.")
                     onSuccess()
                 } else {
-                    // Limit Reached
-                    Log.w(TAG, "Free user limit REACHED. Denying.")
+                    Log.w(TAG, "Free user limit REACHED or time untrusted. Denying.")
                     onFailure("Daily free limit reached. Upgrade for more.")
                 }
             },
             onError = {
-                // Fail closed. If we can't check RC, assume they are free and deny.
                 Log.e(TAG, "Could not verify subscription status. Denying request. ${it.message}")
                 onFailure("Could not verify subscription. Please check connection.")
             }
         )
     }
 
-    /**
-     * Checks and increments the daily limit counter.
-     * --- THIS IS THE FIX ---
-     * @return `true` if generation is allowed, `false` if limit is reached.
-     */
-    private fun checkAndIncrementCounter(): Boolean {
-        val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
-
-        // --- MODIFIED: Use the new TrustedTimeClient ---
-        val trustedTime: Long? = slopperApp.trustedTimeClient?.computeCurrentUnixEpochMillis()
-
-        if (trustedTime == null) {
-            // This case handles when the client failed to init or has no time signal.
-            // As per the docs, this can happen if there's no internet since boot.
-            // We "fail closed" and deny the request to be safe.
-            Log.e(TAG, "TrustedTimeClient is null or has no time signal. Denying request.")
-            // You could also fall back to System.currentTimeMillis() if you want to allow
-            // the vulnerable behavior, but failing closed is safer.
-            // val trustedTime = System.currentTimeMillis() // <-- Vulnerable fallback
-            return false // Deny request
-        }
-
-        val trustedCalendar = Calendar.getInstance().apply { timeInMillis = trustedTime }
-        val trustedDay = trustedCalendar.get(Calendar.DAY_OF_YEAR)
-        // --- END MODIFIED ---
-
-        val lastGenDay = prefs.getInt(KEY_DAILY_LIMIT_DAY, -1)
-        var generationCount = prefs.getInt(KEY_DAILY_LIMIT_COUNT, 0)
-
-        if (trustedDay != lastGenDay) {
-            // New day, reset counter
-            generationCount = 1
-            prefs.edit {
-                putInt(KEY_DAILY_LIMIT_COUNT, generationCount)
-                putInt(KEY_DAILY_LIMIT_DAY, trustedDay)
-                apply()
-            }
-            Log.d(TAG, "New trusted day detected. Count reset to 1.")
-            return true // Allowed
-        } else {
-            // Same day, check limit
-            if (generationCount < FREE_TIER_LIMIT) {
-                // Limit not reached, increment
-                generationCount++
-                prefs.edit {
-                    putInt(KEY_DAILY_LIMIT_COUNT, generationCount)
-                    apply()
-                }
-                Log.d(TAG, "Same trusted day. Count incremented to $generationCount.")
-                return true // Allowed
-            } else {
-                // Limit IS reached
-                Log.w(TAG, "Same trusted day. Count ($generationCount) at or over limit ($FREE_TIER_LIMIT).")
-                return false // Denied
-            }
-        }
-    }
-    // --- END FIX ---
-
-
-    // ... (onStartCommand, setupVirtualDisplay, attemptCapture, captureAndProcessImage are UNCHANGED) ...
-
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        Log.d(TAG, "onStartCommand received")
+        Log.d(TAG, "onStartCommand called")
 
-        // --- MODIFICATION: START ---
         if (intent?.action == ACTION_STOP_SERVICE) {
-            Log.d(TAG, "Received STOP command from notification.")
-
-            // Set preference to OFF
-            getSharedPreferences(SlopperActivity.PREFS_NAME, MODE_PRIVATE).edit {
-                putBoolean(SlopperActivity.KEY_SERVICES_ENABLED, false)
-            }
-
-            // Stop floating tool
-            stopService(Intent(this, FloatingToolService::class.java))
-
-            // Stop self
-            _isServiceRunning.postValue(false)
-            stopSelf()
-            return START_NOT_STICKY
-        }
-        // --- MODIFICATION: END ---
-
-        if (intent == null) {
-            Log.w(TAG, "onStartCommand called with null intent, likely restart. Stopping.")
-            _isServiceRunning.postValue(false)
+            Log.i(TAG, "Received stop command")
             stopSelf()
             return START_NOT_STICKY
         }
 
-        if (!Settings.canDrawOverlays(this)) {
-            Log.e(TAG, "ScreenCaptureService requires Overlay permission. Stopping self.")
-            Toast.makeText(this, "Overlay permission required for capture session.", Toast.LENGTH_LONG).show()
-            _isServiceRunning.postValue(false)
+        val resultCode = intent?.getIntExtra(EXTRA_RESULT_CODE, Activity.RESULT_CANCELED)
+        val data: Intent? = intent?.getParcelableExtra(EXTRA_DATA)
+
+        if (resultCode == null || resultCode != Activity.RESULT_OK || data == null) {
+            Log.e(TAG, "Invalid intent data for screen capture")
             stopSelf()
             return START_NOT_STICKY
         }
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
-            Log.e(TAG, "ScreenCaptureService requires Notification permission on API 33+ to run in foreground. Stopping self.")
-            Toast.makeText(this, "Slopper requires Notification permission.", Toast.LENGTH_SHORT).show()
-            _isServiceRunning.postValue(false)
-            stopSelf()
-            return START_NOT_STICKY
-        }
+        // Start foreground notification
+        startForeground(NOTIFICATION_ID, createNotification())
 
-        val notification = createNotification()
-        try {
-            startForeground(NOTIFICATION_ID, notification)
-            Log.d(TAG, "Service started in foreground.")
-        } catch (e: Exception) {
-            Log.e(TAG, "Error starting foreground service", e)
-            Toast.makeText(this, "Could not start capture service.", Toast.LENGTH_SHORT).show()
-            _isServiceRunning.postValue(false)
-            stopSelf()
-            return START_NOT_STICKY
-        }
+        // Initialize media projection
+        val mediaProjectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+        mediaProjection = mediaProjectionManager.getMediaProjection(resultCode, data)
+        mediaProjection?.registerCallback(projectionCallback, handler)
 
-        val resultCode = intent.getIntExtra(EXTRA_RESULT_CODE, Activity.RESULT_CANCELED)
-        val data: Intent? = intent.getParcelableExtra(EXTRA_DATA)
+        // Setup virtual display and image reader
+        val metrics = resources.displayMetrics
+        val density = metrics.densityDpi
+        val width = metrics.widthPixels
+        val height = metrics.heightPixels
 
-        if (resultCode == Activity.RESULT_OK && data != null) {
-            val mediaProjectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-            if (mediaProjection != null) {
-                Log.w(TAG, "MediaProjection already exists, stopping old one.")
-                mediaProjection?.stop()
-            }
-            mediaProjection = try {
-                mediaProjectionManager.getMediaProjection(resultCode, data)
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to get MediaProjection", e)
-                null
-            }
+        imageReader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2)
 
-            if (mediaProjection == null) {
-                Log.e(TAG, "Failed to get MediaProjection instance.")
-                Toast.makeText(this, "Failed to initialize screen capture.", Toast.LENGTH_SHORT).show()
-                _isServiceRunning.postValue(false)
-                stopSelf()
-                return START_NOT_STICKY
-            }
-            mediaProjection?.registerCallback(projectionCallback, handler)
-            Log.d(TAG, "MediaProjection obtained and callback registered.")
-            setupVirtualDisplay()
-        } else {
-            Log.e(TAG, "Screen capture intent data invalid (resultCode=$resultCode, data==null is ${data==null}).")
-            Toast.makeText(this, "Failed to initialize screen capture.", Toast.LENGTH_SHORT).show()
-            _isServiceRunning.postValue(false)
-            stopSelf()
-            return START_NOT_STICKY
-        }
-        return START_NOT_STICKY
+        virtualDisplay = mediaProjection?.createVirtualDisplay(
+            "ScreenCapture",
+            width, height, density,
+            DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+            imageReader?.surface, null, handler
+        )
+
+        Log.d(TAG, "Virtual display created: ${width}x${height} @${density}dpi")
+
+        // *** ADD THIS LINE: Start FloatingToolService now that we're ready ***
+        startFloatingToolIfNeeded()
+
+        return START_STICKY
     }
 
     private fun setupVirtualDisplay() {
-        // --- MODIFICATION: START ---
         if (mediaProjection == null) {
             Log.w(TAG, "setupVirtualDisplay called but mediaProjection is null. Aborting.")
-            // This can happen if config change receiver fires before projection is ready
             return
         }
-        // --- MODIFICATION: END ---
 
         val displayMetrics = Resources.getSystem().displayMetrics
         val screenWidth = displayMetrics.widthPixels
         val screenHeight = displayMetrics.heightPixels
-        Log.d(TAG, "setupVirtualDisplay: New dimensions $screenWidth x $screenHeight") // Added log
+        Log.d(TAG, "setupVirtualDisplay: New dimensions $screenWidth x $screenHeight")
         try {
             imageReader?.close()
             virtualDisplay?.release()
@@ -424,7 +264,6 @@ class ScreenCaptureService : Service() {
             if (virtualDisplay == null) {
                 Log.e(TAG, "Failed to create VirtualDisplay.")
                 Toast.makeText(this, "Failed to start screen capture display.", Toast.LENGTH_SHORT).show()
-                _isServiceRunning.postValue(false)
                 stopSelf()
             } else {
                 Log.d(TAG, "VirtualDisplay created successfully.")
@@ -432,7 +271,6 @@ class ScreenCaptureService : Service() {
         } catch (e: Exception) {
             Log.e(TAG, "Error setting up VirtualDisplay or ImageReader", e)
             Toast.makeText(this, "Error starting screen capture display.", Toast.LENGTH_SHORT).show()
-            _isServiceRunning.postValue(false)
             stopSelf()
         }
     }
@@ -536,7 +374,6 @@ class ScreenCaptureService : Service() {
             }
     }
 
-    // --- Regenerate Reply is UNCHANGED, as the check happens in the commandReceiver ---
     private fun regenerateReply() {
         val textToProcess = lastRecognizedText
         if (textToProcess == null) {
@@ -545,7 +382,7 @@ class ScreenCaptureService : Service() {
             return
         }
 
-        val prefs = getSharedPreferences(SlopperActivity.PREFS_NAME, MODE_PRIVATE)
+        val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
         val styleName = prefs.getString(FloatingToolService.KEY_SELECTED_STYLE, "POST")!!
         val replyType = prefs.getString(FloatingToolService.KEY_LAST_REPLY_TYPE, "Answer")!!
 
@@ -560,12 +397,11 @@ class ScreenCaptureService : Service() {
         sendBroadcast(Intent(FloatingToolService.ACTION_GENERATION_STARTED))
     }
 
-    // --- MODIFIED: Allow passing an error message ---
     private fun broadcastCompletion(reply: String?, error: String? = null) {
         Log.d(TAG, "Broadcasting GENERATION_COMPLETE. Reply: ${reply?.take(50)}...")
         val completeIntent = Intent(FloatingToolService.ACTION_GENERATION_COMPLETE).apply {
             putExtra(EXTRA_SINGLE_REPLY, reply)
-            putExtra(EXTRA_ERROR_MESSAGE, error) // Pass the error
+            putExtra(EXTRA_ERROR_MESSAGE, error)
         }
         sendBroadcast(completeIntent)
     }
@@ -577,14 +413,10 @@ class ScreenCaptureService : Service() {
         }
 
         try {
-            // --- MODIFIED: Use new model path logic from singleton ---
             val model = getCurrentModel()
-
-            // This is a BLOCKING call, which is OK because we are on a background thread
             val modelPath = ModelDownloadManager.getAbsoluteModelPath(model)
 
-            // --- ADDED: Load LLM parameters from prefs ---
-            val prefs = getSharedPreferences(SlopperActivity.PREFS_NAME, MODE_PRIVATE)
+            val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
             val topK = prefs.getInt(getTopKKey(styleName), 65)
             val finalTemperature = prefs.getFloat(getTemperatureKey(styleName), 1.0f)
 
@@ -595,17 +427,15 @@ class ScreenCaptureService : Service() {
                 }
                 return null
             }
-            // --- END MODIFICATION ---
 
-            val prompt = generatePrompt(
-                applicationContext,
-                styleName,
-                replyTone,
-                contextText.replace("\"", "'")
+            val prompt = generatePromptUseCase(
+                categoryName = styleName,
+                actionOrTone = replyTone,
+                contextText = contextText.replace("\"", "'")
             )
 
+
             val llmOptions = LlmInference.LlmInferenceOptions.builder().setModelPath(modelPath).build()
-            llmOptions.maxTopK()
             val sessionOptions = LlmInferenceSession.LlmInferenceSessionOptions.builder()
                 .setTopK(topK)
                 .setTemperature(finalTemperature)
@@ -661,9 +491,8 @@ class ScreenCaptureService : Service() {
     }
 
 
-    // --- UNCHANGED: Still need this to know *which* model to ask for ---
     private fun getCurrentModel(): Model {
-        val sharedPrefs = getSharedPreferences(SlopperActivity.PREFS_NAME, Context.MODE_PRIVATE)
+        val sharedPrefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val savedModelName = sharedPrefs.getString(
             SlopperActivity.KEY_SELECTED_MODEL,
             Model.GEMMA3_1B_IT.name
@@ -676,10 +505,6 @@ class ScreenCaptureService : Service() {
         }
     }
 
-    // --- REMOVED: getModelPath() ---
-    // This logic is now in ModelDownloadManager.getAbsoluteModelPath()
-
-    // ... (imageToBitmap, createNotificationChannel, createNotification, onBind, onDestroy are all UNCHANGED) ...
     private fun imageToBitmap(image: Image): Bitmap {
         val planes = image.planes
         if (planes.isEmpty()) {
@@ -717,21 +542,19 @@ class ScreenCaptureService : Service() {
     }
 
     private fun createNotificationChannel() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val serviceChannel = NotificationChannel(
-                CHANNEL_ID,
-                "Screen Capture Channel",
-                NotificationManager.IMPORTANCE_LOW
-            ).apply {
-                description = "Notification channel for Slopper screen capture service"
-                enableLights(false)
-                enableVibration(false)
-                setShowBadge(false)
-            }
-            val manager = getSystemService(NotificationManager::class.java)
-            manager?.createNotificationChannel(serviceChannel) ?: Log.e(TAG, "NotificationManager not found.")
-            Log.d(TAG, "Notification channel created (or already exists).")
+        val serviceChannel = NotificationChannel(
+            CHANNEL_ID,
+            "Screen Capture Channel",
+            NotificationManager.IMPORTANCE_LOW
+        ).apply {
+            description = "Notification channel for Slopper screen capture service"
+            enableLights(false)
+            enableVibration(false)
+            setShowBadge(false)
         }
+        val manager = getSystemService(NotificationManager::class.java)
+        manager?.createNotificationChannel(serviceChannel) ?: Log.e(TAG, "NotificationManager not found.")
+        Log.d(TAG, "Notification channel created (or already exists).")
     }
 
     private fun createNotification(): Notification {
@@ -740,22 +563,20 @@ class ScreenCaptureService : Service() {
         }
         val pendingIntent = PendingIntent.getActivity(this, 0, notificationIntent, PendingIntent.FLAG_IMMUTABLE)
 
-        // --- MODIFICATION: START ---
         val stopIntent = Intent(this, ScreenCaptureService::class.java).apply {
             action = ACTION_STOP_SERVICE
         }
         val stopPendingIntent = PendingIntent.getService(
             this,
-            1, // Use a different request code
+            1,
             stopIntent,
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
         val stopAction = NotificationCompat.Action.Builder(
-            R.drawable.outline_pause_circle_24, // Assumes this drawable exists
+            R.drawable.outline_pause_circle_24,
             "Stop Session",
             stopPendingIntent
         ).build()
-        // --- MODIFICATION: END ---
 
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("Slopper Capture Active")
@@ -764,8 +585,25 @@ class ScreenCaptureService : Service() {
             .setContentIntent(pendingIntent)
             .setOngoing(true)
             .setPriority(NotificationCompat.PRIORITY_MIN)
-            .addAction(stopAction) // <-- MODIFICATION: ADDED
+            .addAction(stopAction)
             .build()
+    }
+
+    private fun startFloatingToolIfNeeded() {
+        if (Settings.canDrawOverlays(this)) {
+            Log.d(TAG, "ScreenCaptureService fully initialized, starting FloatingToolService")
+            // Small delay to ensure everything is ready
+            handler.postDelayed({
+                try {
+                    startService(Intent(this, FloatingToolService::class.java))
+                    Log.d(TAG, "FloatingToolService start command sent successfully")
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to start FloatingToolService from ScreenCaptureService", e)
+                }
+            }, 100)
+        } else {
+            Log.w(TAG, "Cannot start FloatingToolService: overlay permission missing")
+        }
     }
 
     override fun onBind(intent: Intent): IBinder? = null
@@ -773,7 +611,7 @@ class ScreenCaptureService : Service() {
     override fun onDestroy() {
         super.onDestroy()
         Log.d(TAG, "onDestroy")
-        _isServiceRunning.postValue(false)
+        serviceStateRepo.setCaptureServiceState(false)
 
         handler.removeCallbacks(permissionCheckRunnable)
 
@@ -785,17 +623,6 @@ class ScreenCaptureService : Service() {
                 Log.w(TAG, "Receiver not registered or already unregistered?")
             }
         }
-
-        // --- MODIFICATION: START ---
-        if (configChangeReceiver != null) {
-            try {
-                unregisterReceiver(configChangeReceiver)
-                Log.d(TAG, "ConfigChange receiver unregistered.")
-            } catch (e: IllegalArgumentException) {
-                Log.w(TAG, "ConfigChange receiver not registered?")
-            }
-        }
-        // --- MODIFICATION: END ---
 
         try { virtualDisplay?.release() } catch (e: Exception) { Log.e(TAG, "Error releasing VirtualDisplay", e) }
         virtualDisplay = null

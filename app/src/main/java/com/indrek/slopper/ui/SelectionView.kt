@@ -1,16 +1,18 @@
-package com.indrek.slopper.service
+package com.indrek.slopper.ui
 
 import android.content.Context
-import android.graphics.*
+import android.graphics.Canvas
+import android.graphics.Paint
+import android.graphics.Rect
+import android.graphics.RectF
 import android.util.AttributeSet
 import android.util.TypedValue
 import android.view.MotionEvent
 import android.view.View
 import androidx.annotation.AttrRes
 import androidx.annotation.ColorInt
-import androidx.core.content.ContextCompat // --- IMPORTED THIS ---
+import androidx.core.content.ContextCompat
 import com.indrek.slopper.R
-
 
 class SelectionView @JvmOverloads constructor(
     context: Context, attrs: AttributeSet? = null, defStyleAttr: Int = 0

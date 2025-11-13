@@ -1,4 +1,4 @@
-package com.indrek.slopper
+package com.indrek.slopper.domain.model
 
 enum class ModelDelivery {
     FAST_FOLLOW, // Automatically downloads after install

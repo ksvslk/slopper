@@ -1,58 +1,62 @@
-package com.indrek.slopper
+package com.indrek.slopper.ui
 
 import android.Manifest
-import android.os.Build
-import androidx.core.content.ContextCompat
-import android.content.pm.PackageManager
-
-import android.app.Activity
-import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.media.projection.MediaProjectionManager
+import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
+import android.text.method.LinkMovementMethod
+import android.text.util.Linkify
 import android.util.Log
 import android.view.LayoutInflater
 import android.view.View
-import android.widget.ArrayAdapter
+import android.view.ViewGroup
 import android.widget.ImageButton
 import android.widget.ImageView
-import android.widget.ProgressBar
 import android.widget.RadioButton
-import android.widget.RadioGroup
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.viewModels
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.ContextCompat
 import androidx.core.content.edit
-import androidx.lifecycle.Observer
-import com.indrek.slopper.service.FloatingToolService
-import com.indrek.slopper.service.ScreenCaptureService
 import androidx.core.net.toUri
-import androidx.lifecycle.MutableLiveData
+import androidx.core.view.children
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.progressindicator.CircularProgressIndicator
-// --- REMOVED ASSET PACK IMPORTS ---
+import com.indrek.slopper.C.PREFS_NAME
+import com.indrek.slopper.R
+import com.indrek.slopper.data.DownloadStatus
+import com.indrek.slopper.data.ModelDownloadManager
+import com.indrek.slopper.data.SessionStateRepository
 import com.indrek.slopper.databinding.ActivitySlopperBinding
-// Import children extension
-import androidx.core.view.children
-import com.google.android.gms.time.TrustedTimeClient // --- This was an incorrect import in your file ---
-import com.revenuecat.purchases.ExperimentalPreviewRevenueCatPurchasesAPI
-import com.revenuecat.purchases.Purchases
-// --- ADDED: Imports for Limit Check ---
-import com.revenuecat.purchases.getCustomerInfoWith
-import java.util.Calendar
-// --- END ADDED ---
+import com.indrek.slopper.domain.model.Model
+import com.indrek.slopper.domain.model.ModelDelivery
+import com.indrek.slopper.service.FloatingToolService
+import com.indrek.slopper.service.ScreenCaptureService
 import com.revenuecat.purchases.ui.revenuecatui.ExperimentalPreviewRevenueCatUIPurchasesAPI
 import com.revenuecat.purchases.ui.revenuecatui.activity.PaywallActivityLauncher
 import com.revenuecat.purchases.ui.revenuecatui.activity.PaywallResult
 import com.revenuecat.purchases.ui.revenuecatui.activity.PaywallResultHandler
+import dagger.hilt.android.AndroidEntryPoint
+import kotlinx.coroutines.launch
 import java.io.File
+import javax.inject.Inject
 
 @OptIn(ExperimentalPreviewRevenueCatUIPurchasesAPI::class)
+@AndroidEntryPoint
 class SlopperActivity : AppCompatActivity(), PaywallResultHandler {
+
+    @Inject
+    lateinit var sessionStateRepo: SessionStateRepository
 
     private lateinit var paywallActivityLauncher: PaywallActivityLauncher
     private lateinit var root: View
@@ -63,50 +67,51 @@ class SlopperActivity : AppCompatActivity(), PaywallResultHandler {
     private lateinit var overlayPermissionLauncherForSession: ActivityResultLauncher<Intent>
     private lateinit var notificationPermissionLauncherForButton: ActivityResultLauncher<String>
     private lateinit var notificationPermissionLauncher: ActivityResultLauncher<String>
-
     private lateinit var notificationPermissionLauncherOnCreate: ActivityResultLauncher<String>
 
     private var isCheckingPermissions = false
 
-    // --- ADDED: Helper to get the application class ---
-    private val slopperApp: SlopperApplication
-        get() = applicationContext as SlopperApplication
-    // --- END ADDED ---
+    private val viewModel: SlopperActivityViewModel by viewModels()
 
     companion object {
         const val TAG = "SlopperActivity"
-        const val PREFS_NAME = "slopper_prefs"
         const val KEY_SERVICES_ENABLED = "services_enabled"
         const val KEY_SELECTED_MODEL = "selected_model"
         const val PREF_KEY_LICENSE_ACCEPTED_PREFIX = "license_accepted_"
         const val KEY_DAILY_LIMIT_COUNT = "daily_limit_count"
         const val KEY_DAILY_LIMIT_DAY = "daily_limit_day"
-        const val FREE_TIER_LIMIT = 5
-        const val PREMIUM_ENTITLEMENT_ID = "Slopper Unlimited"
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
+
         super.onCreate(savedInstanceState)
+
+        setTheme(R.style.Base_Theme_Slopper)
+
+
         binding = ActivitySlopperBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
         paywallActivityLauncher = PaywallActivityLauncher(this, this)
 
-        ModelDownloadManager.modelStates.observe(this) { states ->
-            updateModelListUI(states)
-            checkFastFollowStatus(states)
+        // FIXED: Changed from LiveData observe to StateFlow collect
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                ModelDownloadManager.modelStates.collect { states ->
+                    updateModelListUI(states)
+                    checkFastFollowStatus(states)
+                }
+            }
         }
 
-        mediaProjectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+        mediaProjectionManager = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
 
-        // ... (Permission launchers are unchanged) ...
         notificationPermissionLauncherOnCreate = registerForActivityResult(ActivityResultContracts.RequestPermission()) { isGranted ->
             if (isGranted) {
                 Log.d(TAG, "Notification permission granted via on-create request.")
             } else {
                 Log.w(TAG, "Notification permission denied via on-create request.")
             }
-            updateUiStates()
         }
         requestNotificationPermissionOnCreate()
 
@@ -123,7 +128,7 @@ class SlopperActivity : AppCompatActivity(), PaywallResultHandler {
         }
 
         screenCaptureLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
-            if (result.resultCode == Activity.RESULT_OK && result.data != null) {
+            if (result.resultCode == RESULT_OK && result.data != null) {
                 Log.d(TAG, "Screen capture permission granted.")
                 startScreenCaptureService(result.resultCode, result.data!!)
             } else {
@@ -135,7 +140,7 @@ class SlopperActivity : AppCompatActivity(), PaywallResultHandler {
         }
 
         overlayPermissionLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
-            updateUiStates()
+            // UI will auto-update via onResume -> viewModel.refreshAllData()
         }
 
         notificationPermissionLauncherForButton = registerForActivityResult(ActivityResultContracts.RequestPermission()) { isGranted ->
@@ -145,7 +150,6 @@ class SlopperActivity : AppCompatActivity(), PaywallResultHandler {
                 Log.w(TAG, "Notification permission denied via button.")
                 Toast.makeText(this, "Notification permission is required on this device.", Toast.LENGTH_SHORT).show()
             }
-            updateUiStates()
         }
 
         overlayPermissionLauncherForSession = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
@@ -160,12 +164,10 @@ class SlopperActivity : AppCompatActivity(), PaywallResultHandler {
             }
         }
 
-        // ... (Button/switch listeners are unchanged, including btnEditPrompts) ...
         binding.btnGrantOverlay.setOnClickListener {
             Log.d(TAG, "Grant Overlay button clicked.")
             if (!Settings.canDrawOverlays(this)) {
                 val intent = Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, "package:$packageName".toUri())
-                Toast.makeText(this, "Please grant 'Draw over other apps' permission.", Toast.LENGTH_LONG).show()
                 overlayPermissionLauncher.launch(intent)
             }
         }
@@ -178,7 +180,6 @@ class SlopperActivity : AppCompatActivity(), PaywallResultHandler {
                         putExtra(Settings.EXTRA_APP_PACKAGE, packageName)
                     }
                     startActivity(intent)
-                    Toast.makeText(this, "Please enable notifications for Slopper.", Toast.LENGTH_LONG).show()
                 } catch (e: Exception) {
                     Log.e(TAG, "Failed to open notification settings", e)
                     try {
@@ -203,7 +204,7 @@ class SlopperActivity : AppCompatActivity(), PaywallResultHandler {
                 return@setOnCheckedChangeListener
             }
             Log.d(TAG, "Session Switch toggled by user: isChecked=$isChecked")
-            val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
 
             if (isChecked) {
                 if (!Settings.canDrawOverlays(this)) {
@@ -222,7 +223,7 @@ class SlopperActivity : AppCompatActivity(), PaywallResultHandler {
                 val startSessionAction = {
                     Log.d(TAG, "License accepted, proceeding to start session.")
                     isCheckingPermissions = true
-                    prefs.edit { putBoolean(KEY_SERVICES_ENABLED, true) }
+                    sessionStateRepo.setSessionEnabled(true)
                     checkNotificationPermission()
                 }
 
@@ -236,80 +237,54 @@ class SlopperActivity : AppCompatActivity(), PaywallResultHandler {
                     }
                 }
             } else {
-                prefs.edit { putBoolean(KEY_SERVICES_ENABLED, false) }
+                sessionStateRepo.setSessionEnabled(false)
                 stopFloatingToolService()
                 stopScreenCaptureService()
             }
         }
 
         binding.btnEditPrompts.setOnClickListener {
-            Purchases.sharedInstance.getCustomerInfoWith(
-                onSuccess = { customerInfo ->
-                    val isPremium = customerInfo.entitlements[PREMIUM_ENTITLEMENT_ID]?.isActive == true
-                    if (isPremium) {
-                        startActivity(Intent(this, PromptEditorActivity::class.java))
-                    } else {
-                        Toast.makeText(this, "Editing prompts is a Slopper Unlimited feature.", Toast.LENGTH_SHORT).show()
-                        launchPaywallActivity()
-                    }
-                },
-                onError = {
-                    Toast.makeText(this, "Could not verify subscription. Please check connection.", Toast.LENGTH_SHORT).show()
-                }
-            )
+            startActivity(Intent(this, PromptEditorActivity::class.java))
         }
 
         binding.cardPaywall.setOnClickListener {
             launchPaywallActivity()
         }
 
-        // --- MODIFIED: Observe TrustedTime init state ---
-        slopperApp.isTrustedTimeInitialized.observe(this) { isInitialized ->
-            Log.d(TAG, "TrustedTime client initialization state changed: $isInitialized")
-            // Re-run UI update once client is ready (or has failed)
-            updateUiStates()
-        }
-        // --- END MODIFIED ---
-
-        FloatingToolService.isServiceRunning.observe(this, Observer { updateUiStates() })
-
-        ScreenCaptureService.isServiceRunning.observe(this, Observer { isCaptureRunning ->
-            Log.d(TAG, "ScreenCaptureService running state changed: $isCaptureRunning")
-            val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            val userWantsServices = prefs.getBoolean(KEY_SERVICES_ENABLED, false)
-
-            if (isCaptureRunning && userWantsServices && Settings.canDrawOverlays(this)) {
-                binding.root.postDelayed({
-                    startFloatingToolService()
-                    isCheckingPermissions = false
-                }, 500)
-            } else if (!isCaptureRunning && userWantsServices) {
-                Log.w(TAG, "Capture service stopped unexpectedly while enabled by user.")
-            } else if (isCaptureRunning && !userWantsServices) {
-                Log.w(TAG, "Capture service started, but user intent is now OFF. Stopping service.")
-                stopScreenCaptureService()
-                isCheckingPermissions = false
-            } else if (!isCaptureRunning && isCheckingPermissions) {
-                Log.w(TAG, "Capture service is not running, but a check was in progress. Resetting flag.")
-                isCheckingPermissions = false
+        // Observe the final, combined UI state
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                viewModel.uiState.collect { state ->
+                    updateUiStates(state)
+                }
             }
-            updateUiStates()
-        })
+        }
+
+        // FIXED: Changed from LiveData observe to StateFlow collect
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                viewModel.isTrustedTimeInitialized.collect { isInitialized ->
+                    if (isInitialized) {
+                        Log.d(TAG, "TrustedTime client is ready, telling ViewModel.")
+                        viewModel.onTrustedTimeReady()
+                    }
+                }
+            }
+        }
     }
 
     override fun onResume() {
         super.onResume()
-        Log.d(TAG, "onResume called, updating UI states.")
+        Log.d(TAG, "onResume called, refreshing data.")
         ModelDownloadManager.refreshStates()
         isCheckingPermissions = false
-        updateUiStates()
+        viewModel.refreshAllData()
     }
 
     override fun onDestroy() {
         super.onDestroy()
     }
 
-    // ... (requestNotificationPermissionOnCreate, disableSession are unchanged) ...
     private fun requestNotificationPermissionOnCreate() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
@@ -324,34 +299,37 @@ class SlopperActivity : AppCompatActivity(), PaywallResultHandler {
     private fun disableSession() {
         Log.w(TAG, "Disabling session.")
         isCheckingPermissions = false
-        val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        prefs.edit { putBoolean(KEY_SERVICES_ENABLED, false) }
+        sessionStateRepo.setSessionEnabled(false)
         stopFloatingToolService()
         stopScreenCaptureService()
         binding.swEnableSession.post {
             binding.swEnableSession.isChecked = false
-            updateUiStates()
         }
     }
 
-    // --- MODIFIED: This function now handles the "initializing" state ---
-    private fun updateUiStates() {
-        val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        val isSessionEnabledByUser = prefs.getBoolean(KEY_SERVICES_ENABLED, false)
-        val isCaptureRunning = ScreenCaptureService.isServiceRunning.value ?: false
-        val isToolRunning = FloatingToolService.isServiceRunning.value ?: false
-        val hasOverlay = Settings.canDrawOverlays(this)
-
-        val hasNotification = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+    private fun updateUiStates(state: SlopperUiState) {
+        // --- Premium & Limit UI (from ViewModel) ---
+        if (state.isPremium) {
+            binding.tvDailyLimitStatus.visibility = View.GONE
+            updatePaywallCardForPremium()
         } else {
-            true
+            if (!state.limitData.isReady) {
+                binding.tvDailyLimitStatus.text = "Checking daily limit..."
+            } else {
+                binding.tvDailyLimitStatus.text = "Generations remaining today: ${state.limitData.remaining} / ${state.limitData.total}"
+            }
+            binding.tvDailyLimitStatus.visibility = View.VISIBLE
+
+            resetPaywallCardForFree()
         }
+
+        // --- Permission UI (from ViewModel state) ---
+        val hasOverlay = state.hasOverlayPermission
+        val hasNotification = state.hasNotificationPermission
         val hasAllPermissions = hasOverlay && hasNotification
 
-        Log.d(TAG, "updateUiStates: UserEnabled=$isSessionEnabledByUser, CaptureRunning=$isCaptureRunning, ToolRunning=$isToolRunning, HasOverlay=$hasOverlay, HasNotification=$hasNotification")
+        Log.d(TAG, "updateUiStates: HasOverlay=$hasOverlay, HasNotification=$hasNotification")
 
-        // ... (Permission UI logic is unchanged) ...
         binding.tvOverlayStatus.text = if (hasOverlay) "Status: Granted" else "Status: Not Granted"
         binding.btnGrantOverlay.isEnabled = !hasOverlay
         binding.btnGrantOverlay.text = if (hasOverlay) "Permission Granted" else "Grant Overlay Permission"
@@ -375,7 +353,11 @@ class SlopperActivity : AppCompatActivity(), PaywallResultHandler {
             binding.ivPermissionCheck.imageTintList = ContextCompat.getColorStateList(this, R.color.colorError)
         }
 
-        checkFastFollowStatus(ModelDownloadManager.modelStates.value.orEmpty())
+        // --- Service & Session UI (from ViewModel) ---
+        val isCaptureRunning = state.isCaptureServiceRunning
+        val isToolRunning = state.isFloatingToolRunning
+
+        checkFastFollowStatus(ModelDownloadManager.modelStates.value)
 
         val isSessionFullyRunning = isCaptureRunning && isToolRunning
         if (isSessionFullyRunning) {
@@ -386,73 +368,23 @@ class SlopperActivity : AppCompatActivity(), PaywallResultHandler {
             binding.ivSessionCheck.imageTintList = ContextCompat.getColorStateList(this, R.color.colorError)
         }
 
-        // --- MODIFIED: This whole block now handles the trusted time init state ---
-        Purchases.sharedInstance.getCustomerInfoWith(
-            onSuccess = { customerInfo ->
-                val isPremium = customerInfo.entitlements[PREMIUM_ENTITLEMENT_ID]?.isActive == true
+        // --- Switch Logic (from ViewModel state) ---
+        val isSessionEnabledByUser = state.isSessionEnabledByUser
 
-                if (isPremium) {
-                    binding.btnEditPrompts.text = "Edit Prompt Templates"
-                    binding.tvDailyLimitStatus.visibility = View.GONE
-                } else {
-                    // User is FREE, check trusted time
-                    binding.btnEditPrompts.text = "Edit Prompt Templates (Pro)"
-
-                    // 1. Get trusted time.
-                    val trustedTime = slopperApp.trustedTimeClient?.computeCurrentUnixEpochMillis()
-
-                    if (trustedTime == null) {
-                        // Time client is NOT ready. Show a loading state.
-                        // This is what the user sees for the first few moments
-                        // instead of the incorrect "5 / 5".
-                        binding.tvDailyLimitStatus.text = "Checking daily limit..."
-                        binding.tvDailyLimitStatus.visibility = View.VISIBLE
-                    } else {
-                        // Time client IS ready. Do the real calculation.
-                        val trustedCalendar = Calendar.getInstance().apply { timeInMillis = trustedTime }
-                        val trustedDay = trustedCalendar.get(Calendar.DAY_OF_YEAR)
-
-                        val lastGenDay = prefs.getInt(KEY_DAILY_LIMIT_DAY, -1)
-                        val generationCount = prefs.getInt(KEY_DAILY_LIMIT_COUNT, 0)
-
-                        val remaining: Int
-                        val total = FREE_TIER_LIMIT
-
-                        if (trustedDay != lastGenDay) {
-                            remaining = total
-                        } else {
-                            remaining = (total - generationCount).coerceAtLeast(0)
-                        }
-
-                        binding.tvDailyLimitStatus.text = "Generations remaining today: $remaining / $total"
-                        binding.tvDailyLimitStatus.visibility = View.VISIBLE
-                    }
-                }
-            },
-            onError = {
-                // Failed to get info, hide/lock everything
-                binding.tvDailyLimitStatus.visibility = View.GONE
-                binding.btnEditPrompts.text = "Edit Prompt Templates (Pro)"
-            }
-        )
-        // --- END MODIFIED ---
-
-
-        binding.swEnableSession.setOnCheckedChangeListener(null) // Prevent listener loop
+        binding.swEnableSession.setOnCheckedChangeListener(null) // Prevent loop
         val shouldSwitchBeOn = isSessionEnabledByUser && hasAllPermissions && isCaptureRunning
         if (binding.swEnableSession.isChecked != shouldSwitchBeOn) {
-            Log.d(TAG, "Session Switch state updated to: $shouldSwitchBeOn")
+            Log.d(TAG, "Session Switch state updated via StateFlow to: $shouldSwitchBeOn")
             binding.swEnableSession.isChecked = shouldSwitchBeOn
         }
 
-        // ... (swEnableSession listener is unchanged) ...
         binding.swEnableSession.setOnCheckedChangeListener { _, isChecked ->
             if (isCheckingPermissions) {
                 Log.d(TAG, "Session Switch toggle ignored (from UI update), currently checking permissions.")
                 return@setOnCheckedChangeListener
             }
             Log.d(TAG, "Session Switch toggled from UI update listener: isChecked=$isChecked")
-            val currentPrefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
 
             if (isChecked) {
                 if (!Settings.canDrawOverlays(this)) {
@@ -461,16 +393,16 @@ class SlopperActivity : AppCompatActivity(), PaywallResultHandler {
                     return@setOnCheckedChangeListener
                 }
 
-                val savedModelName = currentPrefs.getString(KEY_SELECTED_MODEL, Model.GEMMA3_1B_IT.name)
+                val savedModelName = prefs.getString(KEY_SELECTED_MODEL, Model.GEMMA3_1B_IT.name)
                 val model = try { Model.valueOf(savedModelName ?: Model.GEMMA3_1B_IT.name) } catch (e: Exception) { Model.GEMMA3_1B_IT }
 
                 val licenseAcceptedKey = PREF_KEY_LICENSE_ACCEPTED_PREFIX + model.name
-                val isLicenseAccepted = currentPrefs.getBoolean(licenseAcceptedKey, false)
+                val isLicenseAccepted = prefs.getBoolean(licenseAcceptedKey, false)
 
                 val startSessionAction = {
                     Log.d(TAG, "License accepted, proceeding to start session (from UI update).")
                     isCheckingPermissions = true
-                    currentPrefs.edit { putBoolean(KEY_SERVICES_ENABLED, true) }
+                    sessionStateRepo.setSessionEnabled(true)
                     checkNotificationPermission()
                 }
 
@@ -478,37 +410,24 @@ class SlopperActivity : AppCompatActivity(), PaywallResultHandler {
                     startSessionAction()
                 } else {
                     Log.d(TAG, "License for ${model.name} not accepted. Showing dialog (from UI update).")
-                    binding.swEnableSession.isChecked = false // Revert the switch
+                    binding.swEnableSession.isChecked = false
 
                     showLicenseAgreementDialog(model) {
                         binding.swEnableSession.isChecked = true
                     }
                 }
             } else {
-                currentPrefs.edit { putBoolean(KEY_SERVICES_ENABLED, false) }
+                sessionStateRepo.setSessionEnabled(false)
                 stopFloatingToolService()
                 stopScreenCaptureService()
             }
         }
     }
 
-    // ... (rest of SlopperActivity.kt is unchanged) ...
-    private fun requestOverlayPermission() {
-        Log.d(TAG, "Requesting Overlay permission (Grant Button)...")
-        if (!Settings.canDrawOverlays(this)) {
-            val intent = Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, "package:$packageName".toUri())
-            Toast.makeText(this, "Please grant 'Draw over other apps' permission.", Toast.LENGTH_LONG).show()
-            overlayPermissionLauncher.launch(intent)
-        } else {
-            Log.d(TAG, "Overlay permission already granted.")
-            updateUiStates()
-        }
-    }
-
     private fun checkNotificationPermission() {
         Log.d(TAG, "Session Step 1: Checking Notification permission...")
         isCheckingPermissions = true
-        if (!getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).getBoolean(KEY_SERVICES_ENABLED, false)) {
+        if (!sessionStateRepo.isSessionEnabled()) {
             Log.w(TAG, "checkNotificationPermission: Aborting (User intent disabled).")
             isCheckingPermissions = false
             disableSession()
@@ -530,55 +449,33 @@ class SlopperActivity : AppCompatActivity(), PaywallResultHandler {
 
     private fun checkAndRequestScreenCapture() {
         Log.d(TAG, "Session Step 2: Checking Screen Capture requirement...")
-        if (!getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).getBoolean(KEY_SERVICES_ENABLED, false) || !isCheckingPermissions) {
+        if (!sessionStateRepo.isSessionEnabled() || !isCheckingPermissions) {
             Log.w(TAG, "checkAndRequestScreenCapture: Aborting (User intent disabled or check cancelled).")
             isCheckingPermissions = false
             disableSession()
             return
         }
-        if (ScreenCaptureService.isServiceRunning.value != true) {
+
+        // We read from the ViewModel state now, but checking the prefs is also fine for user intent
+        if (viewModel.uiState.value.isCaptureServiceRunning != true) {
             Log.d(TAG, "Requesting Screen Capture permission.")
             val screenCaptureIntent = mediaProjectionManager.createScreenCaptureIntent()
             screenCaptureLauncher.launch(screenCaptureIntent)
         } else {
             Log.d(TAG, "Screen Capture already running.")
             isCheckingPermissions = false
-            startFloatingToolService()
-        }
-    }
-
-    private fun startFloatingToolService() {
-        Log.d(TAG, "Attempting to start FloatingToolService...")
-        val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-
-        if (prefs.getBoolean(KEY_SERVICES_ENABLED, false)
-            && ScreenCaptureService.isServiceRunning.value == true
-            && Settings.canDrawOverlays(this))
-        {
-            Log.i(TAG, "Starting FloatingToolService.")
-            try {
-                startService(Intent(this, FloatingToolService::class.java))
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to start FloatingToolService", e)
-                Toast.makeText(this, "Failed to start floating tool.", Toast.LENGTH_SHORT).show()
-            }
-        } else {
-            Log.w(TAG, "Start FloatingToolService prerequisites not met: UserEnabled=${prefs.getBoolean(KEY_SERVICES_ENABLED, false)}, CaptureRunning=${ScreenCaptureService.isServiceRunning.value}, HasOverlay=${Settings.canDrawOverlays(this)}")
-            if (prefs.getBoolean(KEY_SERVICES_ENABLED, false)) {
-                updateUiStates()
-            }
         }
     }
 
     private fun stopFloatingToolService() {
-        if (FloatingToolService.isServiceRunning.value == true) {
+        if (viewModel.uiState.value.isFloatingToolRunning == true) {
             Log.i(TAG, "Stopping FloatingToolService.")
             stopService(Intent(this, FloatingToolService::class.java))
         }
     }
 
     private fun startScreenCaptureService(resultCode: Int, data: Intent) {
-        if (ScreenCaptureService.isServiceRunning.value != true) {
+        if (viewModel.uiState.value.isCaptureServiceRunning != true) {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
                 ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
                 Log.e(TAG, "Cannot start ScreenCaptureService: Notification permission missing!")
@@ -594,7 +491,7 @@ class SlopperActivity : AppCompatActivity(), PaywallResultHandler {
     }
 
     private fun stopScreenCaptureService() {
-        if (ScreenCaptureService.isServiceRunning.value == true) {
+        if (viewModel.uiState.value.isCaptureServiceRunning == true) {
             Log.i(TAG, "Stopping ScreenCaptureService.")
             stopService(Intent(this, ScreenCaptureService::class.java))
         }
@@ -667,7 +564,7 @@ class SlopperActivity : AppCompatActivity(), PaywallResultHandler {
     }
 
     private fun updateModelListUI(states: Map<String, DownloadStatus>) {
-        val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
         val savedModelName = prefs.getString(KEY_SELECTED_MODEL, Model.GEMMA3_1B_IT.name)
         val inflater = LayoutInflater.from(this)
 
@@ -837,12 +734,17 @@ class SlopperActivity : AppCompatActivity(), PaywallResultHandler {
 
     private fun showLicenseAgreementDialog(model: Model, onAgree: () -> Unit) {
         val licenseText = readLicenseFile(model)
-        val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
 
         val scrollView = ScrollView(this)
         val textView = TextView(this).apply {
             text = licenseText
             setPadding(48, 24, 48, 24)
+
+            // --- Add these two lines ---
+            autoLinkMask = Linkify.WEB_URLS
+            movementMethod = LinkMovementMethod.getInstance()
+            // --------------------------
         }
         scrollView.addView(textView)
 
@@ -880,6 +782,87 @@ class SlopperActivity : AppCompatActivity(), PaywallResultHandler {
         paywallActivityLauncher.launchIfNeeded(requiredEntitlementIdentifier = "")
     }
 
-    override fun onActivityResult(result: PaywallResult) {}
+    /**
+     * Updates the paywall card to show premium status
+     */
+    private fun updatePaywallCardForPremium() {
+        // Find the TextViews inside the paywall card
+        val paywallCard = binding.cardPaywall
+        val paywallTitle = paywallCard.findViewById<TextView>(R.id.tv_paywall_title)
+            ?: findTextViewByText(paywallCard, "Get Slopper Unlimited")
+        val paywallSubtitle = paywallCard.findViewById<TextView>(R.id.tv_paywall_subtitle)
+            ?: findTextViewByText(paywallCard, "Send as many")
 
+        // Update title text
+        paywallTitle?.text = "You are unstoppable."
+
+        // Update subtitle text
+        paywallSubtitle?.text = "You have full access to all Slopper features. Thank you for your support!"
+    }
+
+    /**
+     * Resets the paywall card to show free tier messaging
+     */
+    private fun resetPaywallCardForFree() {
+        val paywallCard = binding.cardPaywall
+        val paywallTitle = paywallCard.findViewById<TextView>(R.id.tv_paywall_title)
+            ?: findTextViewByText(paywallCard, "You are unstoppable")
+        val paywallSubtitle = paywallCard.findViewById<TextView>(R.id.tv_paywall_subtitle)
+            ?: findTextViewByText(paywallCard, "You have full access")
+
+        // Reset to original text
+        paywallTitle?.text = "Get Slopper Unlimited"
+        paywallSubtitle?.text = "Send as many private replies as you want and create/modify prompts."
+    }
+
+    /**
+     * Helper to convert dp to pixels
+     */
+    private fun Int.dpToPx(): Int {
+        return (this * resources.displayMetrics.density).toInt()
+    }
+
+    /**
+     * Helper to find a TextView by its text content
+     */
+    private fun findTextViewByText(parent: View, searchText: String): TextView? {
+        if (parent is TextView && parent.text.toString().startsWith(searchText.take(10))) {
+            return parent
+        }
+        if (parent is ViewGroup) {
+            for (i in 0 until parent.childCount) {
+                val child = parent.getChildAt(i)
+                val result = findTextViewByText(child, searchText)
+                if (result != null) return result
+            }
+        }
+        return null
+    }
+
+    override fun onActivityResult(result: PaywallResult) {
+        Log.d(TAG, "Paywall result: $result")
+        when (result) {
+            is PaywallResult.Purchased -> {
+                // User completed a purchase
+                Log.d(TAG, "Purchase completed! Refreshing premium status.")
+                viewModel.refreshAllData()
+                Toast.makeText(this, "Purchase successful! Welcome to Slopper Unlimited!", Toast.LENGTH_LONG).show()
+            }
+            is PaywallResult.Restored -> {
+                // User restored purchases
+                Log.d(TAG, "Purchases restored! Refreshing premium status.")
+                viewModel.refreshAllData()
+                Toast.makeText(this, "Purchases restored successfully!", Toast.LENGTH_LONG).show()
+            }
+            is PaywallResult.Cancelled -> {
+                // User cancelled the paywall
+                Log.d(TAG, "Paywall cancelled by user.")
+            }
+            is PaywallResult.Error -> {
+                // An error occurred
+                Log.e(TAG, "Paywall error: ${result.error}")
+                Toast.makeText(this, "An error occurred. Please try again.", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
 }

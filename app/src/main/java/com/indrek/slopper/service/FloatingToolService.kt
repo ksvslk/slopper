@@ -24,34 +24,37 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.view.ContextThemeWrapper
 import androidx.core.content.edit
-import androidx.lifecycle.LiveData
-import androidx.lifecycle.MutableLiveData
-import androidx.lifecycle.Observer
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.PagerSnapHelper
 import androidx.recyclerview.widget.RecyclerView
 import com.facebook.shimmer.ShimmerFrameLayout
 import com.google.android.material.button.MaterialButton
-import com.google.android.material.materialswitch.MaterialSwitch
 import com.google.android.material.progressindicator.CircularProgressIndicator
 import com.google.android.material.slider.Slider
+import com.indrek.slopper.C.PREFS_NAME
+import com.indrek.slopper.C.PREMIUM_ENTITLEMENT_ID
 import com.indrek.slopper.R
-import com.indrek.slopper.SlopperActivity
-import com.indrek.slopper.SlopperActivity.Companion.FREE_TIER_LIMIT
-import com.indrek.slopper.SlopperActivity.Companion.KEY_DAILY_LIMIT_COUNT
-import com.indrek.slopper.SlopperActivity.Companion.KEY_DAILY_LIMIT_DAY
-import com.indrek.slopper.SlopperActivity.Companion.PREFS_NAME
-import com.indrek.slopper.SlopperActivity.Companion.PREMIUM_ENTITLEMENT_ID
-import com.indrek.slopper.SlopperApplication
+import com.indrek.slopper.data.PromptRepository
+import com.indrek.slopper.data.ServiceStateRepository
+import com.indrek.slopper.data.SessionStateRepository
+import com.indrek.slopper.data.UserLimitRepository
+import com.indrek.slopper.domain.model.getTemperatureKey
+import com.indrek.slopper.domain.model.getTopKKey
+import com.indrek.slopper.ui.SelectionView
 import com.revenuecat.purchases.Purchases
+import com.revenuecat.purchases.VerificationResult
 import com.revenuecat.purchases.getCustomerInfoWith
-import java.util.Calendar
-import com.indrek.slopper.getActiveCategories
-import com.indrek.slopper.getActionLabelsForCategory
-import com.indrek.slopper.getTemperatureKey
-import com.indrek.slopper.getTopKKey
+import dagger.hilt.android.AndroidEntryPoint
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.launchIn
+import kotlinx.coroutines.flow.onEach
 import java.util.Locale
+import javax.inject.Inject
 
+@AndroidEntryPoint
 class FloatingToolService : Service() {
 
     private lateinit var windowManager: WindowManager
@@ -87,16 +90,18 @@ class FloatingToolService : Service() {
 
     private var currentUiMode: Int = 0
 
-    private val slopperApp: SlopperApplication
-        get() = applicationContext as SlopperApplication
+    @Inject
+    lateinit var userLimitRepo: UserLimitRepository
+    @Inject
+    lateinit var serviceStateRepo: ServiceStateRepository
 
-    private val captureServiceObserver = Observer<Boolean> { isCaptureRunning ->
-        if (!isCaptureRunning) {
-            Log.w(TAG, "ScreenCaptureService stopped. Stopping FloatingToolService.")
-            _isServiceRunning.postValue(false)
-            stopSelf()
-        }
-    }
+    @Inject
+    lateinit var sessionStateRepo: SessionStateRepository
+
+    @Inject
+    lateinit var promptRepository: PromptRepository
+
+    private val serviceScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
 
     private val generationStateReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -133,7 +138,6 @@ class FloatingToolService : Service() {
         }
     }
 
-
     companion object {
         const val TAG = "FloatingToolService"
         const val EXTRA_CAPTURE_RECT = "capture_rect"
@@ -142,9 +146,6 @@ class FloatingToolService : Service() {
         const val KEY_RESULT_Y_POS = "result_y_pos"
         const val KEY_SELECTED_STYLE = "selected_style"
         const val KEY_LAST_REPLY_TYPE = "last_reply_type"
-
-        private val _isServiceRunning = MutableLiveData<Boolean>(false)
-        val isServiceRunning: LiveData<Boolean> = _isServiceRunning
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -152,16 +153,22 @@ class FloatingToolService : Service() {
     override fun onCreate() {
         super.onCreate()
         Log.d(TAG, "onCreate")
-        _isServiceRunning.postValue(true)
+        serviceStateRepo.setFloatingToolState(true)
 
         if (!Settings.canDrawOverlays(this)) {
             Log.e(TAG, "FloatingToolService started without Overlay permission! Stopping self.")
-            _isServiceRunning.postValue(false)
             stopSelf()
             return
         }
 
-        ScreenCaptureService.isServiceRunning.observeForever(captureServiceObserver)
+        serviceStateRepo.isCaptureServiceRunning
+            .onEach { isCaptureRunning ->
+                if (!isCaptureRunning) {
+                    Log.w(TAG, "ScreenCaptureService stopped. Stopping FloatingToolService.")
+                    stopSelf()
+                }
+            }
+            .launchIn(serviceScope)
 
         windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
         createThemedContext(resources.configuration)
@@ -177,7 +184,6 @@ class FloatingToolService : Service() {
             Log.d(TAG, "Generation state receiver registered.")
         } catch (e: Exception) {
             Log.e(TAG, "Error registering generation state receiver", e)
-            _isServiceRunning.postValue(false)
             stopSelf()
             return
         }
@@ -239,12 +245,10 @@ class FloatingToolService : Service() {
         }
     }
 
-
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         Log.d(TAG, "onStartCommand received")
         if (!Settings.canDrawOverlays(this)) {
             Log.e(TAG, "Overlay permission revoked! Stopping service.")
-            _isServiceRunning.postValue(false)
             stopSelf()
             return START_NOT_STICKY
         }
@@ -316,12 +320,10 @@ class FloatingToolService : Service() {
                 Log.e(TAG, "Failed to add bubble view", e)
                 bubbleView = null
                 isBubbleVisible = false
-                _isServiceRunning.postValue(false)
                 stopSelf()
             }
         }
     }
-
 
     @SuppressLint("ClickableViewAccessibility")
     private fun expandToSelectionView() {
@@ -344,71 +346,11 @@ class FloatingToolService : Service() {
                 selectionView = selectionLayout!!.findViewById(R.id.selection_view)
                 selectionLayout!!.findViewById<MaterialButton>(R.id.btn_cancel).setOnClickListener { collapseToBubble() }
 
-                val endSessionSwitch = selectionLayout!!.findViewById<MaterialSwitch>(R.id.sw_end_session)
-                endSessionSwitch.isChecked = true
-                endSessionSwitch.setOnCheckedChangeListener { _, isChecked ->
-                    if (!isChecked) {
-                        Log.d(TAG, "End session switch toggled off, stopping services")
-                        getSharedPreferences(SlopperActivity.PREFS_NAME, MODE_PRIVATE).edit {
-                            putBoolean(SlopperActivity.KEY_SERVICES_ENABLED, false)
-                        }
-                        stopService(Intent(this@FloatingToolService, ScreenCaptureService::class.java))
-                        stopSelf()
-                    }
-                }
+                // --- SESSION SWITCH LOGIC REMOVED ---
 
-                val prefs = getSharedPreferences(SlopperActivity.PREFS_NAME, Context.MODE_PRIVATE)
+                // --- LIMIT STATUS LOGIC REMOVED ---
 
-
-                // --- MODIFIED: This whole block now handles the trusted time init state ---
-                try {
-                    val tvLimitStatus = selectionLayout!!.findViewById<TextView>(R.id.tv_limit_status_overlay)
-                    Purchases.sharedInstance.getCustomerInfoWith(
-                        onSuccess = { customerInfo ->
-                            val isPremium = customerInfo.entitlements[PREMIUM_ENTITLEMENT_ID]?.isActive == true
-                            if (isPremium) {
-                                tvLimitStatus.visibility = View.GONE
-                            } else {
-                                // --- User is free, show their limit using TRUSTED time ---
-
-                                // 1. Get trusted time.
-                                val trustedTime = slopperApp.trustedTimeClient?.computeCurrentUnixEpochMillis()
-
-                                if (trustedTime == null) {
-                                    // Time client is NOT ready. Show a loading state.
-                                    tvLimitStatus.text = "Checking limit..."
-                                    tvLimitStatus.visibility = View.VISIBLE
-                                } else {
-                                    // Time client IS ready. Do the real calculation.
-                                    val trustedCalendar = Calendar.getInstance().apply { timeInMillis = trustedTime }
-                                    val trustedDay = trustedCalendar.get(Calendar.DAY_OF_YEAR)
-
-                                    val lastGenDay = prefs.getInt(KEY_DAILY_LIMIT_DAY, -1)
-                                    val generationCount = prefs.getInt(KEY_DAILY_LIMIT_COUNT, 0)
-
-                                    val remaining: Int
-                                    val total = FREE_TIER_LIMIT
-
-                                    if (trustedDay != lastGenDay) {
-                                        remaining = total
-                                    } else {
-                                        remaining = (total - generationCount).coerceAtLeast(0)
-                                    }
-
-                                    tvLimitStatus.text = "Generations Remaining: $remaining / $total"
-                                    tvLimitStatus.visibility = View.VISIBLE
-                                }
-                            }
-                        },
-                        onError = {
-                            tvLimitStatus.visibility = View.GONE // Hide on error
-                        }
-                    )
-                } catch (e: Exception) {
-                    Log.e(TAG, "Failed to find 'tv_limit_status_overlay'. Did you add it to selection_overlay.xml?", e)
-                }
-                // --- END MODIFIED ---
-
+                val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
                 val labelTemp = selectionLayout!!.findViewById<TextView>(R.id.label_temperature_overlay)
                 val sliderTemp = selectionLayout!!.findViewById<Slider>(R.id.slider_temperature_overlay)
@@ -424,14 +366,14 @@ class FloatingToolService : Service() {
                     sliderTemp.value = temp
                     sliderTopK.value = topK.toFloat()
                     labelTemp.text = String.format(Locale.US, "Creativity: %.1f", temp)
-                    labelTopK.text = "Focus: $topK"
+                    labelTopK.text = "Options: $topK"
 
                     prefs.edit { putString(KEY_SELECTED_STYLE, styleName) }
                 }
 
                 val rvCategoryReel = selectionLayout!!.findViewById<RecyclerView>(R.id.rv_category_reel)
 
-                activeCategories = getActiveCategories(themedContext)
+                activeCategories = promptRepository.getActiveCategories()
                 if (activeCategories.isEmpty()) {
                     Log.e(TAG, "No active categories found!")
                     activeCategories = listOf("POST") // Fallback
@@ -471,12 +413,11 @@ class FloatingToolService : Service() {
                     }
                 })
 
-
                 sliderTemp.addOnChangeListener { _, value, _ ->
                     labelTemp.text = String.format(Locale.US, "Creativity: %.1f", value)
                 }
                 sliderTopK.addOnChangeListener { _, value, _ ->
-                    labelTopK.text = "Focus: ${value.toInt()}"
+                    labelTopK.text = "Options: ${value.toInt()}"
                 }
 
                 sliderTemp.addOnSliderTouchListener(object : Slider.OnSliderTouchListener {
@@ -536,14 +477,13 @@ class FloatingToolService : Service() {
         override fun getItemCount() = categories.size
     }
 
-
     private fun updateActionButtons(styleName: String) {
         Handler(Looper.getMainLooper()).post {
             selectionLayout?.let { layout ->
                 val buttonContainer = layout.findViewById<LinearLayout>(R.id.action_buttons_container)
                 buttonContainer.removeAllViews()
 
-                val allButtonLabels = getActionLabelsForCategory(themedContext, styleName)
+                val allButtonLabels = promptRepository.getActionLabels(styleName)
 
                 for (label in allButtonLabels) {
                     try {
@@ -577,7 +517,7 @@ class FloatingToolService : Service() {
             }
             hideResultOverlay()
 
-            if (_isServiceRunning.value == true) {
+            if (serviceStateRepo.isFloatingToolRunning.value) {
                 if (bubbleView == null) {
                     createBubbleView()
                 } else {
@@ -598,21 +538,22 @@ class FloatingToolService : Service() {
         }
     }
 
-
     private fun triggerCapture(replyType: String) {
         Purchases.sharedInstance.getCustomerInfoWith(
             onSuccess = { customerInfo ->
-                val isPremium = customerInfo.entitlements[PREMIUM_ENTITLEMENT_ID]?.isActive == true
+                val entitlement = customerInfo.entitlements[PREMIUM_ENTITLEMENT_ID]
+                val isActive = entitlement?.isActive == true
+                val isVerified = customerInfo.entitlements.verification != VerificationResult.FAILED
+                val isPremium = isActive && isVerified
 
-                // --- MODIFIED: Renamed function for clarity ---
-                if (!isPremium && isDailyLimitReached_Trusted()) {
-                    // --- END MODIFIED ---
+                val limitData = userLimitRepo.getLimitData()
+                if (!isPremium && (!limitData.isReady || limitData.remaining <= 0)) {
                     handler.post {
-                        Toast.makeText(themedContext, "Daily free limit reached. Upgrade for unlimited generations.", Toast.LENGTH_LONG).show()
+                        val msg = if (!limitData.isReady) "Checking limit, please wait..." else "Daily free limit reached."
+                        Toast.makeText(themedContext, msg, Toast.LENGTH_LONG).show()
                     }
                     return@getCustomerInfoWith
                 }
-
                 proceedWithCapture(replyType)
             },
             onError = {
@@ -621,34 +562,6 @@ class FloatingToolService : Service() {
             }
         )
     }
-
-    // --- MODIFIED: This function now uses the TrustedTimeClient and "fails closed" ---
-    private fun isDailyLimitReached_Trusted(): Boolean {
-        val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
-
-        // 1. Get trusted time.
-        val trustedTime = slopperApp.trustedTimeClient?.computeCurrentUnixEpochMillis()
-
-        if (trustedTime == null) {
-            // Client not ready. "Fail closed" to be safe.
-            // This assumes the limit IS reached to prevent clicks during the init race.
-            Log.w(TAG, "TrustedTime not ready. Assuming limit reached for UX check.")
-            return true
-        }
-
-        val trustedCalendar = Calendar.getInstance().apply { timeInMillis = trustedTime }
-        val trustedDay = trustedCalendar.get(Calendar.DAY_OF_YEAR)
-
-        val lastGenDay = prefs.getInt(KEY_DAILY_LIMIT_DAY, -1)
-        val generationCount = prefs.getInt(KEY_DAILY_LIMIT_COUNT, 0)
-
-        return if (trustedDay != lastGenDay) {
-            false // New day, limit not reached
-        } else {
-            generationCount >= FREE_TIER_LIMIT // Same day, check count
-        }
-    }
-    // --- END MODIFIED ---
 
     private fun proceedWithCapture(replyType: String) {
         val currentSelectionView = selectionView
@@ -667,7 +580,7 @@ class FloatingToolService : Service() {
             "POST" // Fallback
         }
 
-        getSharedPreferences(SlopperActivity.PREFS_NAME, MODE_PRIVATE).edit {
+        getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit {
             putString(KEY_SELECTED_STYLE, selectedStyleName)
             putString(KEY_LAST_REPLY_TYPE, replyType)
         }
@@ -682,12 +595,17 @@ class FloatingToolService : Service() {
             }
         }
 
+        // --- This is the fix to show the loading spinner immediately ---
+        collapseToBubble()
+        showLoadingState()
+        // --- End fix ---
+
         val intent = Intent(ScreenCaptureService.ACTION_CAPTURE_AND_RECOGNIZE).apply {
             putExtra(EXTRA_CAPTURE_RECT, captureRect)
             putExtra(ScreenCaptureService.EXTRA_IS_REGENERATION, false)
         }
         sendBroadcast(intent)
-        handler.postDelayed({ collapseToBubble() }, 100)
+        // handler.postDelayed({ collapseToBubble() }, 100) // <-- This is now removed
     }
 
     private fun showIdleState() {
@@ -708,7 +626,6 @@ class FloatingToolService : Service() {
         }
     }
 
-
     @SuppressLint("ClickableViewAccessibility")
     private fun showResultOverlay(reply: String) {
         Handler(Looper.getMainLooper()).post {
@@ -724,7 +641,7 @@ class FloatingToolService : Service() {
                     resultLayout = inflater.inflate(R.layout.results_overlay, null)
                     Log.d(TAG, "Result layout created")
 
-                    val prefs = getSharedPreferences(SlopperActivity.PREFS_NAME, Context.MODE_PRIVATE)
+                    val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
                     val savedY = prefs.getInt(KEY_RESULT_Y_POS, 0)
 
                     val params = WindowManager.LayoutParams(
@@ -762,7 +679,7 @@ class FloatingToolService : Service() {
             val sliderTempResult = resultLayout?.findViewById<Slider>(R.id.slider_temperature_result)
             val labelTopKResult = resultLayout?.findViewById<TextView>(R.id.label_top_k_result)
             val sliderTopKResult = resultLayout?.findViewById<Slider>(R.id.slider_top_k_result)
-            val prefs = getSharedPreferences(SlopperActivity.PREFS_NAME, Context.MODE_PRIVATE)
+            val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             val styleName = prefs.getString(KEY_SELECTED_STYLE, "POST")!!
 
             val topK = prefs.getInt(getTopKKey(styleName), 65)
@@ -771,10 +688,10 @@ class FloatingToolService : Service() {
             sliderTempResult?.value = temp
             sliderTopKResult?.value = topK.toFloat()
             labelTempResult?.text = String.format(Locale.US, "Creativity: %.1f", temp)
-            labelTopKResult?.text = "Focus: $topK"
+            labelTopKResult?.text = "Options: $topK"
 
             sliderTempResult?.addOnChangeListener { _, value, _ -> labelTempResult?.text = String.format(Locale.US, "Creativity: %.1f", value) }
-            sliderTopKResult?.addOnChangeListener { _, value, _ -> labelTopKResult?.text = "Focus: ${value.toInt()}" }
+            sliderTopKResult?.addOnChangeListener { _, value, _ -> labelTopKResult?.text = "Options: ${value.toInt()}" }
 
             sliderTempResult?.addOnSliderTouchListener(object : Slider.OnSliderTouchListener {
                 override fun onStartTrackingTouch(slider: Slider) {}
@@ -788,7 +705,6 @@ class FloatingToolService : Service() {
                     prefs.edit { putInt(getTopKKey(styleName), slider.value.toInt()) }
                 }
             })
-
 
             shimmerLayout?.stopShimmer()
             shimmerLayout?.hideShimmer()
@@ -815,7 +731,7 @@ class FloatingToolService : Service() {
                         return@setOnTouchListener true
                     }
                     MotionEvent.ACTION_UP -> {
-                        val prefs = getSharedPreferences(SlopperActivity.PREFS_NAME, Context.MODE_PRIVATE)
+                        val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
                         prefs.edit { putInt(KEY_RESULT_Y_POS, params.y) }
                         return@setOnTouchListener true
                     }
@@ -823,14 +739,18 @@ class FloatingToolService : Service() {
                 return@setOnTouchListener false
             }
 
-
             btnRegenerate?.setOnClickListener {
-                // --- MODIFIED: Add trusted UX Check here for regeneration ---
                 Purchases.sharedInstance.getCustomerInfoWith(
                     onSuccess = { customerInfo ->
-                        val isPremium = customerInfo.entitlements[PREMIUM_ENTITLEMENT_ID]?.isActive == true
-                        if (!isPremium && isDailyLimitReached_Trusted()) {
-                            Toast.makeText(themedContext, "Daily free limit reached.", Toast.LENGTH_LONG).show()
+                        val entitlement = customerInfo.entitlements[PREMIUM_ENTITLEMENT_ID]
+                        val isActive = entitlement?.isActive == true
+                        val isVerified = customerInfo.entitlements.verification != VerificationResult.FAILED
+                        val isPremium = isActive && isVerified
+
+                        val limitData = userLimitRepo.getLimitData()
+                        if (!isPremium && (!limitData.isReady || limitData.remaining <= 0)) {
+                            val msg = if (!limitData.isReady) "Checking limit..." else "Daily free limit reached."
+                            Toast.makeText(themedContext, msg, Toast.LENGTH_LONG).show()
                             return@getCustomerInfoWith
                         }
 
@@ -845,7 +765,6 @@ class FloatingToolService : Service() {
                         sendBroadcast(intent)
                     },
                     onError = {
-                        // Fail open, let the service check
                         replyTextView?.alpha = 0.3f
                         shimmerLayout?.showShimmer(true)
                         btnRegenerate.isEnabled = false
@@ -857,7 +776,6 @@ class FloatingToolService : Service() {
                         sendBroadcast(intent)
                     }
                 )
-                // --- END MODIFIED ---
             }
 
             val copyAndCloseAction = {
@@ -880,8 +798,6 @@ class FloatingToolService : Service() {
             }
         }
     }
-
-
 
     private fun hideResultOverlay() {
         Handler(Looper.getMainLooper()).post {
@@ -911,9 +827,8 @@ class FloatingToolService : Service() {
     override fun onDestroy() {
         super.onDestroy()
         Log.d(TAG, "onDestroy")
-        _isServiceRunning.postValue(false)
-
-        ScreenCaptureService.isServiceRunning.removeObserver(captureServiceObserver)
+        serviceStateRepo.setFloatingToolState(false)
+        serviceScope.cancel()
 
         try {
             unregisterReceiver(generationStateReceiver)

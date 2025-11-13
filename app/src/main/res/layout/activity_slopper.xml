@@ -12,7 +12,7 @@
         android:gravity="center_horizontal"
         android:orientation="vertical"
         android:padding="24dp"
-        tools:context=".SlopperActivity">
+        tools:context=".ui.SlopperActivity">
 
         <com.google.android.material.imageview.ShapeableImageView
             android:layout_width="80dp"
@@ -394,6 +394,7 @@
                     android:orientation="vertical">
 
                     <com.google.android.material.textview.MaterialTextView
+                        android:id="@+id/tv_paywall_title"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
                         android:text="Get Slopper Unlimited"
@@ -402,6 +403,7 @@
                         android:textColor="@color/colorOnTertiaryContainer"/>
 
                     <com.google.android.material.textview.MaterialTextView
+                        android:id="@+id/tv_paywall_subtitle"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
                         android:text="Send as many private replies as you want and create/modify prompts."
