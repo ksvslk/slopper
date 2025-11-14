@@ -38,26 +38,26 @@ val defaultCategoryNames = listOf("POST", "CHAT")
  */
 val promptDefinitions: Map<String, PromptUIDefinition> = mapOf(
     "POST" to PromptUIDefinition(
-        promptPrefix = "Reply in 5-100 chars. No hashtags/@. Only reply text.",
-        genericToneTemplate = "Output {TONE}-style reply RESPONDING TO '{CONTEXT}'",
+        promptPrefix = "5-100 chars. Tweet-like reply only without #-s and @-s.",
+        genericToneTemplate = "{TONE} tone. Context: {CONTEXT}",
         specificActions = listOf(
-            SpecificAction("Answer", "Helpfully but directly respond to {CONTEXT}"),
-            SpecificAction("Question", "Curious direct question about {CONTEXT}"),
-            SpecificAction("Yes", "Positive, agreeing direct reply to {CONTEXT}"),
-            SpecificAction("No", "Negative, disagreeing direct reply to {CONTEXT}"),
-            SpecificAction("Maybe", "Thoughtful, uncertain direct reply to {CONTEXT}")
+            SpecificAction("Answer", "Answer directly to {CONTEXT}"),
+            SpecificAction("Question", "Ask question about {CONTEXT}"),
+            SpecificAction("Yes", "Agree. Context: {CONTEXT}"),
+            SpecificAction("No", "Disagree. Context: {CONTEXT}"),
+            SpecificAction("Maybe", "Be uncertain. Context: {CONTEXT}")
         ),
         genericTones = listOf("Disagreeing", "Supportive", "Satirical", "Deep")
     ),
     "CHAT" to PromptUIDefinition(
-        promptPrefix = "Chat reply in 5-100 chars. Only reply text.",
-        genericToneTemplate = "Output {TONE}-style reply RESPONDING TO '{CONTEXT}'",
+        promptPrefix = "5-100 chars. Chat-like output only.",
+        genericToneTemplate = "{TONE} tone. Context: {CONTEXT}",
         specificActions = listOf(
-            SpecificAction("Question", "Friendly question about {CONTEXT}"),
-            SpecificAction("Answer", "Quick answer to {CONTEXT}"),
-            SpecificAction("Yes", "Enthusiastic positive to {CONTEXT}"),
-            SpecificAction("No", "Polite negative to {CONTEXT}"),
-            SpecificAction("Maybe", "Casual maybe to {CONTEXT}")
+            SpecificAction("Question", "Ask question about {CONTEXT}"),
+            SpecificAction("Answer", "Give answer to {CONTEXT}"),
+            SpecificAction("Yes", "Positive reply. Context: {CONTEXT}"),
+            SpecificAction("No", "Negative reply. Context: {CONTEXT}"),
+            SpecificAction("Maybe", "Uncertain reply. Context: {CONTEXT}")
         ),
         genericTones = listOf("Happy", "Loving", "Neutral")
     )

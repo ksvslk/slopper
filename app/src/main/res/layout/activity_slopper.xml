@@ -333,7 +333,7 @@
                     android:textStyle="bold"
                     android:visibility="gone"
                     tools:visibility="visible"
-                    tools:text="Generations remaining today: 3 / 5"
+                    tools:text="Daily limit: 3 / 5"
                     android:textSize="14sp"
                     android:lineSpacingExtra="2dp"/>
                 <com.google.android.material.textview.MaterialTextView

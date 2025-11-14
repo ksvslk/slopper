@@ -26,3 +26,32 @@
     public static *** v(...);
 }
 
+# Google ML Kit Text Recognition
+-keep class com.google.mlkit.vision.text.** { *; }
+
+# MediaPipe Tasks GenAI (on-device)
+-keep class com.google.mediapipe.tasks.** { *; }
+-keep class com.google.mediapipe.tasks.genai.** { *; }
+
+# MediaPipe framework
+-keep class com.google.mediapipe.framework.** { *; }
+-keepclassmembers class * {
+    @com.google.mediapipe.framework.annotations.* <methods>;
+}
+
+# Keep native methods
+-keepclasseswithmembernames class * {
+    native <methods>;
+}
+
+# TensorFlow Lite (used by MediaPipe)
+-keep class org.tensorflow.lite.** { *; }
+-keep interface org.tensorflow.lite.** { *; }
+
+# Please add these rules to your existing keep rules in order to suppress warnings.
+# This is generated automatically by the Android Gradle plugin.
+-dontwarn com.google.mediapipe.framework.image.BitmapExtractor
+-dontwarn com.google.mediapipe.framework.image.ByteBufferExtractor
+-dontwarn com.google.mediapipe.framework.image.MPImage
+-dontwarn com.google.mediapipe.framework.image.MPImageProperties
+-dontwarn com.google.mediapipe.framework.image.MediaImageExtractor

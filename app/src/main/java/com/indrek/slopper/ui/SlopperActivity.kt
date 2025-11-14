@@ -316,7 +316,7 @@ class SlopperActivity : AppCompatActivity(), PaywallResultHandler {
             if (!state.limitData.isReady) {
                 binding.tvDailyLimitStatus.text = "Checking daily limit..."
             } else {
-                binding.tvDailyLimitStatus.text = "Generations remaining today: ${state.limitData.remaining} / ${state.limitData.total}"
+                binding.tvDailyLimitStatus.text = "Daily limit: ${state.limitData.remaining} / ${state.limitData.total}"
             }
             binding.tvDailyLimitStatus.visibility = View.VISIBLE
 
@@ -565,7 +565,22 @@ class SlopperActivity : AppCompatActivity(), PaywallResultHandler {
 
     private fun updateModelListUI(states: Map<String, DownloadStatus>) {
         val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
-        val savedModelName = prefs.getString(KEY_SELECTED_MODEL, Model.GEMMA3_1B_IT.name)
+        val savedModelName = prefs.getString(KEY_SELECTED_MODEL, null)
+
+        // If no model is saved, find the first completed model or default to GEMMA3_1B_IT
+        val modelToSelect = if (savedModelName != null) {
+            savedModelName
+        } else {
+            // Try to find a completed model
+            val completedModel = Model.entries.firstOrNull {
+                states[it.assetPackName] is DownloadStatus.Completed
+            }
+            val defaultModelName = completedModel?.name ?: Model.GEMMA3_1B_IT.name
+            // Save this default selection
+            prefs.edit { putString(KEY_SELECTED_MODEL, defaultModelName) }
+            defaultModelName
+        }
+
         val inflater = LayoutInflater.from(this)
 
         binding.modelRadioGroup.removeAllViews()
@@ -585,7 +600,7 @@ class SlopperActivity : AppCompatActivity(), PaywallResultHandler {
             val licenseButton = view.findViewById<ImageButton>(R.id.model_license_button)
 
             modelName.text = model.displayName
-            radioButton.isChecked = (model.name == savedModelName)
+            radioButton.isChecked = (model.name == modelToSelect)
 
             val isModelDownloaded = state is DownloadStatus.Completed
 
@@ -740,11 +755,8 @@ class SlopperActivity : AppCompatActivity(), PaywallResultHandler {
         val textView = TextView(this).apply {
             text = licenseText
             setPadding(48, 24, 48, 24)
-
-            // --- Add these two lines ---
             autoLinkMask = Linkify.WEB_URLS
             movementMethod = LinkMovementMethod.getInstance()
-            // --------------------------
         }
         scrollView.addView(textView)
 
@@ -768,6 +780,8 @@ class SlopperActivity : AppCompatActivity(), PaywallResultHandler {
         val textView = TextView(this).apply {
             text = licenseText
             setPadding(48, 24, 48, 24)
+            autoLinkMask = Linkify.WEB_URLS
+            movementMethod = LinkMovementMethod.getInstance()
         }
         scrollView.addView(textView)
 

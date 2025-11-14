@@ -13,13 +13,18 @@ android {
         version = release(36)
     }
 
+    androidResources {
+        noCompress.add("tflite")
+        noCompress.add("task")
+    }
+
     assetPacks += listOf(":gemma3_1b_it", ":gemma3_270m", ":qwen2_5")
 
     defaultConfig {
         applicationId = "com.indrek.slopper"
         minSdk = 26
         targetSdk = 36
-        versionCode = 5
+        versionCode = 6
         versionName = "1.0.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
@@ -30,6 +35,13 @@ android {
     }
 
     buildTypes {
+        debug {
+            isMinifyEnabled = true
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
+        }
         release {
             isMinifyEnabled = true
             proguardFiles(
@@ -43,6 +55,9 @@ android {
         targetCompatibility = JavaVersion.VERSION_11
     }
 
+    testOptions {
+        unitTests.isReturnDefaultValues = true  // ← Add this line
+    }
 }
 
 kotlin {
@@ -89,7 +104,13 @@ dependencies {
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
+
+    testImplementation(libs.kotlin.test)
+    testImplementation(libs.mockk)
+    testImplementation(libs.kotlinx.coroutines.test)
+    testImplementation(libs.turbine)
 }
+
 
 
 kapt {
