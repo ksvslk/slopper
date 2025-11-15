@@ -26,6 +26,7 @@ import android.os.IBinder
 import android.os.Looper
 import android.provider.Settings
 import android.util.Log
+import android.view.WindowManager
 import android.widget.Toast
 import androidx.annotation.RequiresApi
 import androidx.core.app.NotificationCompat
@@ -219,11 +220,31 @@ class ScreenCaptureService : Service() {
         mediaProjection = mediaProjectionManager.getMediaProjection(resultCode, data)
         mediaProjection?.registerCallback(projectionCallback, handler)
 
-        // Setup virtual display and image reader
-        val metrics = resources.displayMetrics
-        val density = metrics.densityDpi
-        val width = metrics.widthPixels
-        val height = metrics.heightPixels
+        // --- ADD THIS INSTEAD ---
+        val windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
+        val density: Int
+        val width: Int
+        val height: Int
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            // Modern way (API 30+)
+            val metrics = windowManager.currentWindowMetrics
+            val bounds = metrics.bounds
+            width = bounds.width()
+            height = bounds.height()
+            // We can still get density from resources, it's usually reliable
+            density = resources.displayMetrics.densityDpi
+        } else {
+            // Legacy way (API < 30)
+            val display = windowManager.defaultDisplay
+            val metrics = android.util.DisplayMetrics()
+            @Suppress("DEPRECATION")
+            display.getRealMetrics(metrics) // getRealMetrics() gets the physical size
+            width = metrics.widthPixels
+            height = metrics.heightPixels
+            density = metrics.densityDpi
+        }
+// --- END OF REPLACEMENT ---
 
         imageReader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2)
 
