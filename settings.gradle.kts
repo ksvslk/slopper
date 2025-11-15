@@ -22,5 +22,4 @@ dependencyResolutionManagement {
 rootProject.name = "slopper"
 include(":app")
 include(":gemma3_1b_it")
-include(":gemma3_270m")
 include(":qwen2_5")

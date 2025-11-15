@@ -1,10 +1,25 @@
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+import java.io.ByteArrayOutputStream
 
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
-    id("org.jetbrains.kotlin.kapt") // <-- THE FIX: Apply by ID
-    alias(libs.plugins.hilt)        // <-- Apply Hilt
+    id("org.jetbrains.kotlin.kapt")
+    alias(libs.plugins.hilt)
+}
+
+fun getGitCommitId(): String {
+    return try {
+        val stdout = ByteArrayOutputStream()
+        exec {
+            commandLine("git", "rev-parse", "--short", "HEAD")
+            standardOutput = stdout
+            isIgnoreExitValue = true
+        }
+        stdout.toString().trim().ifEmpty { "dev" }
+    } catch (e: Exception) {
+        "dev"
+    }
 }
 
 android {
@@ -18,13 +33,13 @@ android {
         noCompress.add("task")
     }
 
-    assetPacks += listOf(":gemma3_1b_it", ":gemma3_270m", ":qwen2_5")
+    assetPacks += listOf(":gemma3_1b_it", ":qwen2_5")
 
     defaultConfig {
         applicationId = "com.indrek.slopper"
         minSdk = 26
         targetSdk = 36
-        versionCode = 9
+        versionCode = 11
         versionName = "1.0.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
@@ -32,10 +47,13 @@ android {
         ndk {
             debugSymbolLevel = "FULL"
         }
+
+        buildConfigField("String", "GIT_COMMIT_ID", "\"${getGitCommitId()}\"")
     }
 
     buildFeatures {
         viewBinding = true
+        buildConfig = true
     }
 
     buildTypes {
@@ -52,6 +70,9 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            ndk {
+                debugSymbolLevel = "FULL"
+            }
         }
     }
     compileOptions {

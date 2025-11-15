@@ -20,13 +20,6 @@ enum class Model(
         ModelDelivery.FAST_FOLLOW, // Set other models as ON_DEMAND
         "gemma3_1b_it_license.txt" // <-- Ensure this file exists in your asset pack
     ),
-    GEMMA3_270M(
-        "Gemma3-270m-IT",
-        "gemma3_270m", // Make sure this matches your other module's name
-        "gemma3-270m-it-q8.task",
-        ModelDelivery.ON_DEMAND, // Set other models as ON_DEMAND
-        "gemma3_270m_license.txt" // <-- Ensure this file exists in your asset pack
-    ),
     QWEN2_5(
         "Qwen2.5-0.5B",
         "qwen2_5", // Make sure this matches your other module's name

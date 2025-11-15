@@ -31,7 +31,9 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
+import com.google.android.material.imageview.ShapeableImageView
 import com.google.android.material.progressindicator.CircularProgressIndicator
+import com.indrek.slopper.BuildConfig
 import com.indrek.slopper.C.PREFS_NAME
 import com.indrek.slopper.R
 import com.indrek.slopper.data.DownloadStatus
@@ -93,6 +95,8 @@ class SlopperActivity : AppCompatActivity(), PaywallResultHandler {
         setContentView(binding.root)
 
         paywallActivityLauncher = PaywallActivityLauncher(this, this)
+
+        setupVersionInfo()
 
         // FIXED: Changed from LiveData observe to StateFlow collect
         lifecycleScope.launch {
@@ -796,6 +800,37 @@ class SlopperActivity : AppCompatActivity(), PaywallResultHandler {
             .show()
     }
 
+    /**
+     * Sets up the version information footer with version name, code, and commit ID
+     */
+    private fun setupVersionInfo() {
+        try {
+            val packageInfo = packageManager.getPackageInfo(packageName, 0)
+            val versionName = packageInfo.versionName ?: "Unknown"
+            val versionCode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                packageInfo.longVersionCode
+            } else {
+                @Suppress("DEPRECATION")
+                packageInfo.versionCode.toLong()
+            }
+
+            // Get commit ID from BuildConfig
+            // Note: You'll need to add this to your build.gradle file
+            val commitId = try {
+                // This will be populated by BuildConfig if configured in build.gradle
+                BuildConfig.GIT_COMMIT_ID
+            } catch (e: Exception) {
+                "dev"
+            }
+
+            val versionText = "Version $versionName ($versionCode) • $commitId"
+            binding.tvVersionInfo.text = versionText
+
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to get version info", e)
+            binding.tvVersionInfo.text = "Version info unavailable"
+        }
+    }
     private fun launchPaywallActivity() {
         paywallActivityLauncher.launchIfNeeded(requiredEntitlementIdentifier = "")
     }
@@ -810,9 +845,18 @@ class SlopperActivity : AppCompatActivity(), PaywallResultHandler {
             ?: findTextViewByText(paywallCard, "Get Slopper Unlimited")
         val paywallSubtitle = paywallCard.findViewById<TextView>(R.id.tv_paywall_subtitle)
             ?: findTextViewByText(paywallCard, "Send as many")
+        val paywallStar = paywallCard.findViewById<ShapeableImageView>(R.id.tv_star)
+        val paywallArrow = paywallCard.findViewById<ShapeableImageView>(R.id.tv_right_arrow)
 
         // Update title text
         paywallTitle?.text = "You are unstoppable."
+
+        paywallCard.setCardBackgroundColor(ContextCompat.getColor(this, R.color.colorSecondaryContainer))
+        paywallTitle?.setTextColor(ContextCompat.getColor(this, R.color.colorOnSecondaryContainer))
+        paywallSubtitle?.setTextColor(ContextCompat.getColor(this, R.color.colorOnSecondaryContainer))
+        paywallStar?.imageTintList = ContextCompat.getColorStateList(this, R.color.colorOnSecondaryContainer)
+        paywallArrow?.imageTintList = ContextCompat.getColorStateList(this, R.color.colorOnSecondaryContainer)
+
 
         // Update subtitle text
         paywallSubtitle?.text = "You have full access to all Slopper features. Thank you for your support!"
@@ -827,10 +871,18 @@ class SlopperActivity : AppCompatActivity(), PaywallResultHandler {
             ?: findTextViewByText(paywallCard, "You are unstoppable")
         val paywallSubtitle = paywallCard.findViewById<TextView>(R.id.tv_paywall_subtitle)
             ?: findTextViewByText(paywallCard, "You have full access")
+        val paywallStar = paywallCard.findViewById<ShapeableImageView>(R.id.tv_star)
+        val paywallArrow = paywallCard.findViewById<ShapeableImageView>(R.id.tv_right_arrow)
 
         // Reset to original text
         paywallTitle?.text = "Get Slopper Unlimited"
         paywallSubtitle?.text = "Send as many private replies as you want and create/modify prompts."
+
+        paywallCard.setCardBackgroundColor(ContextCompat.getColor(this, R.color.colorTertiaryContainer))
+        paywallTitle?.setTextColor(ContextCompat.getColor(this, R.color.colorOnTertiaryContainer))
+        paywallSubtitle?.setTextColor(ContextCompat.getColor(this, R.color.colorOnTertiaryContainer))
+        paywallStar?.imageTintList = ContextCompat.getColorStateList(this, R.color.colorOnTertiaryContainer)
+        paywallArrow?.imageTintList = ContextCompat.getColorStateList(this, R.color.colorOnTertiaryContainer)
     }
 
     /**
