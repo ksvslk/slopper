@@ -4,6 +4,7 @@ import android.content.SharedPreferences
 import android.os.Bundle
 import android.text.SpannableString
 import android.text.style.ImageSpan
+import android.util.Log
 // import android.util.TypedValue // No longer needed
 import android.view.LayoutInflater
 import android.view.View
@@ -63,7 +64,7 @@ class PromptEditorActivity : AppCompatActivity(), PaywallResultHandler {
 
     @Inject
     lateinit var prefs: SharedPreferences
-
+    private var toolbarTitlesInitialized = false
     @Inject
     lateinit var promptRepository: PromptRepository
 
@@ -182,21 +183,7 @@ class PromptEditorActivity : AppCompatActivity(), PaywallResultHandler {
     private fun setupToolbar() {
         binding.toolbar.setNavigationOnClickListener { finish() }
 
-        // --- NEW: Store original titles before setting listener ---
-        val menu = binding.toolbar.menu
-        val itemIds = listOf(
-            R.id.action_reset,
-            R.id.action_add_category,
-            R.id.action_delete_category,
-            R.id.action_restore_defaults
-        )
-        itemIds.forEach { id ->
-            val item = menu.findItem(id)
-            if (item != null) {
-                originalMenuItemTitles[id] = item.title as CharSequence
-            }
-        }
-        // --- END NEW ---
+        // --- Map population logic removed. It's now in updateToolbarMenuLocks ---
 
         binding.toolbar.setOnMenuItemClickListener { item ->
             // Check premium for all toolbar actions
@@ -895,40 +882,60 @@ class PromptEditorActivity : AppCompatActivity(), PaywallResultHandler {
             R.id.action_restore_defaults
         )
 
+        // --- NEW INITIALIZATION LOGIC ---
+        // If we haven't saved the original titles yet, do it now.
+        // This runs only once, when the menu is guaranteed to be ready.
+        if (!toolbarTitlesInitialized) {
+            itemIds.forEach { id ->
+                val item = menu.findItem(id)
+                if (item != null && item.title != null) {
+                    originalMenuItemTitles[id] = item.title.toString()
+                }
+            }
+            // After this, the map is populated with the clean, original titles.
+            toolbarTitlesInitialized = true
+        }
+        // --- END NEW INITIALIZATION LOGIC ---
+
+
+        // --- STATELESS UPDATE LOGIC ---
+        // This runs every time the premium status changes
         itemIds.forEach { id ->
             val item = menu.findItem(id) ?: return@forEach
-            // --- MODIFIED: Get title from our map ---
-            val originalTitle = originalMenuItemTitles[id] ?: item.title // Fallback
+            // Get the *guaranteed clean* title from our map
+            val originalTitle = originalMenuItemTitles[id]
+
+            // If the map failed for some reason, just stop.
+            if (originalTitle == null) {
+                // Log.w("ToolbarLock", "Could not find original title for $id")
+                return@forEach
+            }
 
             if (isPremium) {
-                // Restore original title if it's currently a SpannableString
-                if (item.title?.javaClass == SpannableString::class) {
-                    item.title = originalTitle
-                }
-            } else {
-                // Add lock icon, but only if it's not already a SpannableString
-                if (item.title?.javaClass != SpannableString::class) {
-                    // --- MODIFIED: Use R.color.colorPrimary ---
-                    val premiumColor = ContextCompat.getColor(this, R.color.colorPrimary)
+                // --- 1. PREMIUM USER ---
+                // Always set the clean title
+                item.title = originalTitle
 
+            } else {
+                // --- 2. NON-PREMIUM USER ---
+
+                // Only add a lock if it's not already a SpannableString
+                if (item.title?.javaClass != SpannableString::class) {
+                    val premiumColor = ContextCompat.getColor(this, R.color.colorPrimary)
                     val lockDrawable = ContextCompat.getDrawable(this, R.drawable.ic_lock_premium)?.mutate()
+
                     lockDrawable?.let {
                         DrawableCompat.setTint(it, premiumColor)
-
-                        // --- MODIFIED: Use fixed 18dp size ---
                         val size = (18 * resources.displayMetrics.density).toInt()
                         it.setBounds(0, 0, size, size)
 
-                        // --- MODIFIED: Added an extra space for padding ---
                         val spannableTitle = SpannableString("   $originalTitle")
-                        // --- END MODIFIED ---
-
-                        // --- MODIFIED: Use 2 (ALIGN_CENTER) for better centering ---
                         val imageSpan = ImageSpan(it, 2 /* DynamicDrawableSpan.ALIGN_CENTER */)
-                        // --- END MODIFIED ---
 
                         spannableTitle.setSpan(imageSpan, 0, 1, 0)
                         item.title = spannableTitle
+                    } ?: run {
+                        item.title = originalTitle // Fallback
                     }
                 }
             }
@@ -1020,18 +1027,15 @@ class PromptEditorActivity : AppCompatActivity(), PaywallResultHandler {
      * Update the FAB overlay based on premium status
      */
     private fun updateFabOverlay() {
+        val premiumColor = ContextCompat.getColor(this, R.color.colorOnPrimary)
         if (!isPremium) {
-            // --- MODIFIED: Use R.color.colorOnPrimary ---
-            val premiumColor = ContextCompat.getColor(this, R.color.colorOnPrimary)
-
-            // --- MODIFIED: Remove transparency, set lock icon ---
             binding.fabAddAction.alpha = 1.0f
             binding.fabAddAction.setImageResource(R.drawable.ic_lock_premium)
             binding.fabAddAction.imageTintList = android.content.res.ColorStateList.valueOf(premiumColor)
         } else {
             binding.fabAddAction.alpha = 1.0f
             binding.fabAddAction.setImageResource(android.R.drawable.ic_input_add)
-            binding.fabAddAction.imageTintList = null
+            binding.fabAddAction.imageTintList = android.content.res.ColorStateList.valueOf(premiumColor)
         }
     }
 

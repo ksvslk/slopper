@@ -310,7 +310,11 @@ class SlopperActivity : AppCompatActivity(), PaywallResultHandler {
     private fun updateUiStates(state: SlopperUiState) {
         // --- Premium & Limit UI (from ViewModel) ---
         if (state.isPremium) {
-            binding.tvDailyLimitStatus.visibility = View.GONE
+            //binding.tvDailyLimitStatus.visibility = View.GONE
+
+            binding.tvDailyLimitStatus.text = "Daily limit: UNLIMITED"
+            binding.tvDailyLimitStatus.visibility = View.VISIBLE
+
             updatePaywallCardForPremium()
         } else {
             if (!state.limitData.isReady) {

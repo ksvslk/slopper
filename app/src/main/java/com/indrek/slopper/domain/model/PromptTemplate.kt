@@ -38,27 +38,25 @@ val defaultCategoryNames = listOf("POST", "CHAT")
  */
 val promptDefinitions: Map<String, PromptUIDefinition> = mapOf(
     "POST" to PromptUIDefinition(
-        promptPrefix = "5-100 chars. Tweet-like reply only without #-s and @-s.",
-        genericToneTemplate = "{TONE} tone. Context: {CONTEXT}",
+        promptPrefix = "You are a user who outputs ONE 5-100 char length original reply. Don't look like a spammer. Output is ONLY REPLY.",
+        genericToneTemplate = "Use {TONE} tone to generate interesting reply to {CONTEXT}.",
         specificActions = listOf(
-            SpecificAction("Answer", "Answer directly to {CONTEXT}"),
-            SpecificAction("Question", "Ask question about {CONTEXT}"),
-            SpecificAction("Yes", "Agree. Context: {CONTEXT}"),
-            SpecificAction("No", "Disagree. Context: {CONTEXT}"),
-            SpecificAction("Maybe", "Be uncertain. Context: {CONTEXT}")
+            SpecificAction("Answer", "'{CONTEXT}' has a question. Output a specific interesting answer!"),
+            SpecificAction("Question", "Generate original and domain-specific question inspired by {CONTEXT}."),
+            SpecificAction("Maybe", "Generate 'maybe' style reply to {CONTEXT}")
         ),
-        genericTones = listOf("Disagreeing", "Supportive", "Satirical", "Deep")
+        genericTones = listOf("Disagreeing", "Supportive", "Sarcastic", "Deep")
     ),
     "CHAT" to PromptUIDefinition(
-        promptPrefix = "5-100 chars. Chat-like output only.",
-        genericToneTemplate = "{TONE} tone. Context: {CONTEXT}",
+        promptPrefix = "You are a chat user who gives ONE 5-100 char length reply. Output is ONLY REPLY.",
+        genericToneTemplate = "Use {TONE} tone to generate direct response reply to {CONTEXT}.",
         specificActions = listOf(
-            SpecificAction("Question", "Ask question about {CONTEXT}"),
-            SpecificAction("Answer", "Give answer to {CONTEXT}"),
-            SpecificAction("Yes", "Positive reply. Context: {CONTEXT}"),
-            SpecificAction("No", "Negative reply. Context: {CONTEXT}"),
-            SpecificAction("Maybe", "Uncertain reply. Context: {CONTEXT}")
+            SpecificAction("Answer", "Generate curious and specific answer strictly about {CONTEXT}."),
+            SpecificAction("Question", "Generate curious and specific question strictly about {CONTEXT}."),
+            SpecificAction("Yes", "Generate productive and original 'yes' to {CONTEXT}"),
+            SpecificAction("No", "There is a offer in '{CONTEXT}'. Output polite rejection. If it is a question generate productive 'no'."),
+            SpecificAction("Maybe", "Generate productive and original 'maybe' to {CONTEXT}")
         ),
-        genericTones = listOf("Happy", "Loving", "Neutral")
+        genericTones = listOf("Loving", "Neutral", "Cranky")
     )
 )

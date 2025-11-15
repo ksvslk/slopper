@@ -48,6 +48,27 @@
 -keep class org.tensorflow.lite.** { *; }
 -keep interface org.tensorflow.lite.** { *; }
 
+# Protocol Buffers - Critical for MediaPipe GenAI
+-keep class * extends com.google.protobuf.GeneratedMessageLite { *; }
+-keep class com.google.protobuf.** { *; }
+-keepclassmembers class * extends com.google.protobuf.GeneratedMessageLite {
+    <fields>;
+}
+-keepclassmembers class * extends com.google.protobuf.GeneratedMessageLite$Builder {
+    public <methods>;
+}
+
+# Keep all fields in protobuf messages (prevents the modelPath_ field error)
+-keepclassmembers class * extends com.google.protobuf.GeneratedMessageLite {
+    *** *_;
+}
+
+# Gson (if used by MediaPipe)
+-keepattributes Signature
+-keepattributes *Annotation*
+-dontwarn sun.misc.**
+-keep class com.google.gson.** { *; }
+
 # Please add these rules to your existing keep rules in order to suppress warnings.
 # This is generated automatically by the Android Gradle plugin.
 -dontwarn com.google.mediapipe.framework.image.BitmapExtractor
