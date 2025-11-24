@@ -461,7 +461,7 @@
             android:id="@+id/tv_version_info"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:paddingHorizontal="16dp"
+            android:paddingHorizontal="8dp"
             android:paddingBottom="8dp"
             android:gravity="center"
             android:textSize="11sp"

@@ -39,8 +39,8 @@ android {
         applicationId = "com.indrek.slopper"
         minSdk = 26
         targetSdk = 36
-        versionCode = 11
-        versionName = "1.0.0"
+        versionCode = 12
+        versionName = "1.0.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
